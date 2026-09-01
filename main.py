@@ -429,3 +429,9 @@ def delete_account(item: DeleteAccountRequest):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+@app.get("/api/orders")
+def get_user_orders(user_id: int):
+    # استعلم من قاعدة البيانات عن طلبات هذا المستخدم بالتحديد
+    # مثال باستخدام SQLAlchemy أو الكود الحالي عندك:
+    orders = db.query(Order).filter(Order.user_id == user_id).all()
+    return orders
