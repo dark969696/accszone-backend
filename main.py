@@ -136,3 +136,22 @@ def get_all_accounts():
         return {"status": "success", "accounts": accounts}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+class DeleteAccountRequest(BaseModel):
+    account_id: int
+    admin_secret: str
+
+@app.post("/delete-account")
+def delete_account(item: DeleteAccountRequest):
+    if item.admin_secret != "my_secret_admin_123":
+        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
+        
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM product_items WHERE id = %s;", (item.account_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"status": "success", "message": "تم حذف الحساب بنجاح!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
