@@ -1,4 +1,5 @@
 import os
+import re
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -6,7 +7,6 @@ import psycopg2
 
 app = FastAPI()
 
-# السماح للواجهة بالاتصال بالسيرفر
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,7 +20,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
-# إنشاء الجداول أوتوماتيك عند تشغيل السيرفر
+# إنشاء جداول قاعدة البيانات أوتوماتيكياً
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
@@ -38,8 +38,14 @@ def init_db():
             payment_status VARCHAR(50),
             order_status VARCHAR(50)
         );
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            full_name VARCHAR(100) NOT NULL,
+            email VARCHAR(150) UNIQUE NOT NULL,
+            password VARCHAR(255) NOT NULL
+        );
     """)
-    # إضافة حساب تجريبي لو الجدول فاضي أول مرة
+    # إضافة حساب تجريبي للمنتج لو الجدول فاضي
     cur.execute("SELECT COUNT(*) FROM product_items;")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO product_items (product_id, account_data, is_sold) VALUES (1, 'Grindr_Account_Demo: user@test.com | Pass: 123456', FALSE);")
@@ -55,6 +61,58 @@ def startup_event():
 def read_root():
     return {"message": "AccsZone Backend is running and DB is initialized!"}
 
+# نموذج طلب التسجيل
+class SignupRequest(BaseModel):
+    full_name: str
+    email: str
+    password: str
+
+@app.post("/signup")
+def signup_user(user: SignupRequest):
+    # 1. التحقق من صحة صيغة الإيميل باستخدام Regular Expression
+    email_regex = r"^[\w\.-]+@[\w\.-]+\.\w+$"
+    if not re.match(email_regex, user.email):
+        raise HTTPException(status_code=400, detail="صيغة البريد الإلكتروني غير صحيحة!")
+    
+    # 2. التحقق من طول كلمة المرور (ألا تقل عن 8 خانات)
+    if len(user.password) < 8:
+        raise HTTPException(status_code=400, detail="كلمة المرور يجب ألا تقل عن 8 خانات!")
+        
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # 3. التحقق مما إذا كان الإيميل مستخدماً من قبل
+        cur.execute("SELECT id FROM users WHERE email = %s;", (user.email,))
+        existing_user = cur.fetchone()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="البريد الإلكتروني مستخدم بالفعل، جرب إيميل آخر!")
+            
+        # 4. إدخال المستخدم الجديد في قاعدة البيانات
+        cur.execute(
+            "INSERT INTO users (full_name, email, password) VALUES (%s, %s, %s) RETURNING id;",
+            (user.full_name, user.email, user.password)
+        )
+        user_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        return {
+            "status": "success",
+            "message": "تم إنشاء الحساب بنجاح!",
+            "user": {
+                "id": user_id,
+                "full_name": user.full_name,
+                "email": user.email
+            }
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# باقي المسارات (الطلبات، وإضافة وحذف الحسابات)
 class OrderRequest(BaseModel):
     user_id: int
     product_id: int
@@ -65,29 +123,19 @@ def create_order(order: OrderRequest):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
         cur.execute("SELECT id, account_data FROM product_items WHERE product_id = %s AND is_sold = FALSE LIMIT 1;", (order.product_id,))
         item = cur.fetchone()
-        
         if not item:
             raise HTTPException(status_code=400, detail="عذراً، النفاد تام من هذا المنتج حالياً!")
-            
         item_id, account_data = item
-        
         cur.execute("UPDATE product_items SET is_sold = TRUE WHERE id = %s;", (item_id,))
         cur.execute("INSERT INTO orders (user_id, total_amount, payment_status, order_status) VALUES (%s, %s, 'paid', 'completed') RETURNING id;", 
                     (order.user_id, order.amount))
         order_id = cur.fetchone()[0]
-        
         conn.commit()
         cur.close()
         conn.close()
-        
-        return {
-            "status": "success",
-            "order_id": order_id,
-            "account_details": account_data
-        }
+        return {"status": "success", "order_id": order_id, "account_details": account_data}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -98,16 +146,12 @@ class AddAccountRequest(BaseModel):
 
 @app.post("/add-account")
 def add_account(item: AddAccountRequest):
-    if item.admin_secret != "my_secret_admin_123":
+    if item.admin_secret != "123":
         raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
-        
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO product_items (product_id, account_data, is_sold) VALUES (%s, %s, FALSE);",
-            (item.product_id, item.account_data)
-        )
+        cur.execute("INSERT INTO product_items (product_id, account_data, is_sold) VALUES (%s, %s, FALSE);", (item.product_id, item.account_data))
         conn.commit()
         cur.close()
         conn.close()
@@ -124,15 +168,7 @@ def get_all_accounts():
         rows = cur.fetchall()
         cur.close()
         conn.close()
-        
-        accounts = []
-        for row in rows:
-            accounts.append({
-                "id": row[0],
-                "product_id": row[1],
-                "account_data": row[2],
-                "is_sold": row[3]
-            })
+        accounts = [{"id": r[0], "product_id": r[1], "account_data": r[2], "is_sold": r[3]} for r in rows]
         return {"status": "success", "accounts": accounts}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -145,7 +181,6 @@ class DeleteAccountRequest(BaseModel):
 def delete_account(item: DeleteAccountRequest):
     if item.admin_secret != "123":
         raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
-        
     try:
         conn = get_db_connection()
         cur = conn.cursor()
