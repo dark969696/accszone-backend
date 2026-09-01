@@ -68,7 +68,7 @@ def startup_event():
 
 @app.get("/")
 def read_root():
-    return {"message": "AccsZone Backend is running with Admin Approval System for Deposits!"}
+    return {"message": "AccsZone Backend is running with Balance Wallet & Admin Approval System!"}
 
 class SignupRequest(BaseModel):
     full_name: str
@@ -88,6 +88,9 @@ class BalanceOrderRequest(BaseModel):
     user_id: int
     product_id: int
     amount: float
+
+class BalanceCheckRequest(BaseModel):
+    user_id: int
 
 class ApproveDepositRequest(BaseModel):
     order_id: int
@@ -148,7 +151,26 @@ def login_user(user: LoginRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 1. طلب إيداع جديد (يُسجل بحالة معلقة pending وبدون إضافة رصيد فوراً)
+# مسار جلب رصيد المستخدم مباشرة باستخدام الـ user_id فقط
+@app.post("/get-user-balance")
+def get_user_balance(req: BalanceCheckRequest):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT balance FROM users WHERE id = %s;", (req.user_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="المستخدم غير موجود!")
+            
+        return {"status": "success", "balance": row[0]}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/deposit")
 def deposit_balance(req: DepositRequest):
     try:
@@ -178,7 +200,6 @@ def deposit_balance(req: DepositRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 2. جلب الطلبات المعلقة للإيداع للأدمن
 @app.get("/get-pending-deposits")
 def get_pending_deposits(admin_secret: str):
     if admin_secret != "my_secret_admin_123":
@@ -210,7 +231,6 @@ def get_pending_deposits(admin_secret: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 3. قبول الإيداع من قبل الأدمن وإضافة الرصيد لحساب المستخدم
 @app.post("/approve-deposit")
 def approve_deposit(req: ApproveDepositRequest):
     if req.admin_secret != "my_secret_admin_123":
@@ -219,7 +239,6 @@ def approve_deposit(req: ApproveDepositRequest):
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # جلب تفاصيل الطلب المعلق
         cur.execute("SELECT user_id, total_amount, payment_status FROM orders WHERE id = %s;", (req.order_id,))
         order = cur.fetchone()
         if not order:
@@ -229,10 +248,7 @@ def approve_deposit(req: ApproveDepositRequest):
         if payment_status == 'approved':
             raise HTTPException(status_code=400, detail="تم اعتماد هذا الطلب مسبقاً!")
 
-        # تحديث حالة الطلب إلى approved
         cur.execute("UPDATE orders SET payment_status = 'approved', order_status = 'completed' WHERE id = %s;", (req.order_id,))
-        
-        # إضافة الرصيد لحساب المستخدم
         cur.execute("UPDATE users SET balance = balance + %s WHERE id = %s RETURNING balance;", (amount, user_id))
         new_balance = cur.fetchone()[0]
 
@@ -310,7 +326,7 @@ def check_stock(product_id: int):
 
 @app.post("/add-account")
 def add_account(item: AddAccountRequest):
-    if item.admin_secret != "123":
+    if item.admin_secret != "1":
         raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
     try:
         conn = get_db_connection()
@@ -339,7 +355,7 @@ def get_all_accounts():
 
 @app.post("/delete-account")
 def delete_account(item: DeleteAccountRequest):
-    if item.admin_secret != "123":
+    if item.admin_secret != "1":
         raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
     try:
         conn = get_db_connection()
