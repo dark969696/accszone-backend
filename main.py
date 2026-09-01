@@ -136,6 +136,7 @@ def get_all_accounts():
         return {"status": "success", "accounts": accounts}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 class DeleteAccountRequest(BaseModel):
     account_id: int
     admin_secret: str
