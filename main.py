@@ -224,3 +224,15 @@ def login_user(user: LoginRequest):
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+@app.get("/check-stock/{product_id}")
+def check_stock(product_id: int):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM product_items WHERE product_id = %s AND is_sold = FALSE;", (product_id,))
+        count = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        return {"status": "success", "available_stock": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
