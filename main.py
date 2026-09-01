@@ -1,9 +1,19 @@
 import os
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import psycopg2
 
 app = FastAPI()
+
+# السماح للواجهة بالاتصال بالسيرفر
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # السماح لأي موقع بالاتصال (أو حط رابط موقعك ع Vercel تحديدا)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
