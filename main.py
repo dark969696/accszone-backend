@@ -265,7 +265,7 @@ def deposit_balance(req: DepositRequest):
 
 @app.get("/get-pending-deposits")
 def get_pending_deposits(admin_secret: str):
-    if admin_secret != "my_secret_admin_123":
+    if admin_secret != "1":
         raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
     try:
         conn = get_db_connection()
@@ -287,7 +287,7 @@ def get_pending_deposits(admin_secret: str):
 
 @app.get("/get-all-purchases")
 def get_all_purchases(admin_secret: str):
-    if admin_secret != "my_secret_admin_123":
+    if admin_secret != "1":
         raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
     try:
         conn = get_db_connection()
@@ -315,7 +315,7 @@ def get_all_purchases(admin_secret: str):
 
 @app.post("/approve-deposit")
 def approve_deposit(req: ApproveDepositRequest):
-    if req.admin_secret != "my_secret_admin_123":
+    if req.admin_secret != "1":
         raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
     try:
         conn = get_db_connection()
@@ -444,7 +444,7 @@ def delete_account(item: DeleteAccountRequest):
 
 @app.post("/update-product-price")
 def update_product_price(req: UpdatePriceRequest):
-    if req.admin_secret != "my_secret_admin_123":
+    if req.admin_secret != "1":
         raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
     try:
         conn = get_db_connection()
