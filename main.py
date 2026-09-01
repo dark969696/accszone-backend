@@ -426,3 +426,6 @@ def delete_account(item: DeleteAccountRequest):
         return {"status": "success", "message": "تم حذف الحساب بنجاح!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
