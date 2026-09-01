@@ -20,7 +20,6 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
-# إنشاء جداول قاعدة البيانات أوتوماتيكياً مع ضمان إضافة عمود الـ txid
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
@@ -43,18 +42,18 @@ def init_db():
             id SERIAL PRIMARY KEY,
             full_name VARCHAR(100) NOT NULL,
             email VARCHAR(150) UNIQUE NOT NULL,
-            password VARCHAR(255) NOT NULL
+            password VARCHAR(255) NOT NULL,
+            balance FLOAT DEFAULT 0.0
         );
     """)
     
-    # التأكد من وجود عمود txid في جدول orders القديم لو كان موجود مسبقاً
     try:
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS balance FLOAT DEFAULT 0.0;")
         cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS txid VARCHAR(255);")
         conn.commit()
     except Exception:
         conn.rollback()
 
-    # إضافة حساب تجريبي للمنتج لو الجدول فاضي
     cur.execute("SELECT COUNT(*) FROM product_items;")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO product_items (product_id, account_data, is_sold) VALUES (1, 'Grindr_Account_Demo: user@test.com | Pass: 123456', FALSE);")
@@ -68,9 +67,8 @@ def startup_event():
 
 @app.get("/")
 def read_root():
-    return {"message": "AccsZone Backend is running with automated DB migration & USDT support!"}
+    return {"message": "AccsZone Backend is running with Balance Wallet & USDT Deposit support!"}
 
-# نماذج البيانات (Pydantic Models)
 class SignupRequest(BaseModel):
     full_name: str
     email: str
@@ -80,11 +78,15 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
-class USDTOrderRequest(BaseModel):
+class DepositRequest(BaseModel):
+    user_id: int
+    amount: float
+    txid: str
+
+class BalanceOrderRequest(BaseModel):
     user_id: int
     product_id: int
     amount: float
-    txid: str
 
 class AddAccountRequest(BaseModel):
     product_id: int
@@ -95,8 +97,6 @@ class DeleteAccountRequest(BaseModel):
     account_id: int
     admin_secret: str
 
-
-# مسار التسجيل (Signup)
 @app.post("/signup")
 def signup_user(user: SignupRequest):
     email_regex = r"^[\w\.-]+@[\w\.-]+\.\w+$"
@@ -115,10 +115,11 @@ def signup_user(user: SignupRequest):
             raise HTTPException(status_code=400, detail="البريد الإلكتروني مستخدم بالفعل، جرب إيميل آخر!")
             
         cur.execute(
-            "INSERT INTO users (full_name, email, password) VALUES (%s, %s, %s) RETURNING id;",
+            "INSERT INTO users (full_name, email, password, balance) VALUES (%s, %s, %s, 0.0) RETURNING id, balance;",
             (user.full_name, user.email, user.password)
         )
-        user_id = cur.fetchone()[0]
+        row = cur.fetchone()
+        user_id, balance = row[0], row[1]
         conn.commit()
         cur.close()
         conn.close()
@@ -126,20 +127,19 @@ def signup_user(user: SignupRequest):
         return {
             "status": "success",
             "message": "تم إنشاء الحساب بنجاح!",
-            "user": {"id": user_id, "full_name": user.full_name, "email": user.email}
+            "user": {"id": user_id, "full_name": user.full_name, "email": user.email, "balance": balance}
         }
     except HTTPException as he:
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# مسار تسجيل الدخول (Login)
 @app.post("/login")
 def login_user(user: LoginRequest):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id, full_name, email FROM users WHERE email = %s AND password = %s;", (user.email, user.password))
+        cur.execute("SELECT id, full_name, email, balance FROM users WHERE email = %s AND password = %s;", (user.email, user.password))
         db_user = cur.fetchone()
         cur.close()
         conn.close()
@@ -150,59 +150,95 @@ def login_user(user: LoginRequest):
         return {
             "status": "success",
             "message": "تم تسجيل الدخول بنجاح!",
-            "user": {"id": db_user[0], "full_name": db_user[1], "email": db_user[2]}
+            "user": {"id": db_user[0], "full_name": db_user[1], "email": db_user[2], "balance": db_user[3]}
         }
     except HTTPException as he:
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# مسار إتمام الطلب والدفع بـ USDT مع فحص تكرار الـ TXID
-@app.post("/create-usdt-order")
-def create_usdt_order(order: USDTOrderRequest):
+@app.post("/deposit")
+def deposit_balance(req: DepositRequest):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # التأكد أن الـ TXID غير مستخدم من قبل لمنع التلاعب
-        cur.execute("SELECT id FROM orders WHERE txid = %s;", (order.txid,))
+        cur.execute("SELECT id FROM orders WHERE txid = %s;", (req.txid,))
         if cur.fetchone():
             raise HTTPException(status_code=400, detail="رقم المعاملة (TXID) مستخدم من قبل!")
 
-        # فحص المخزون
+        cur.execute("UPDATE users SET balance = balance + %s WHERE id = %s RETURNING balance;", (req.amount, req.user_id))
+        user_row = cur.fetchone()
+        if not user_row:
+            raise HTTPException(status_code=404, detail="المستخدم غير موجود!")
+            
+        new_balance = user_row[0]
+
+        cur.execute("""
+            INSERT INTO orders (user_id, total_amount, txid, payment_status, order_status) 
+            VALUES (%s, %s, %s, 'deposit', 'completed');
+        """, (req.user_id, req.amount, req.txid))
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return {
+            "status": "success",
+            "message": "تم شحن الرصيد بنجاح!",
+            "new_balance": new_balance
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/buy-with-balance")
+def buy_with_balance(order: BalanceOrderRequest):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("SELECT balance FROM users WHERE id = %s;", (order.user_id,))
+        user_row = cur.fetchone()
+        if not user_row:
+            raise HTTPException(status_code=404, detail="المستخدم غير موجود!")
+        
+        current_balance = user_row[0]
+        if current_balance < order.amount:
+            raise HTTPException(status_code=400, detail="رصيدك غير كافي! يرجى شحن المحفظة أولاً.")
+
         cur.execute("SELECT id, account_data FROM product_items WHERE product_id = %s AND is_sold = FALSE LIMIT 1;", (order.product_id,))
         item = cur.fetchone()
         if not item:
             raise HTTPException(status_code=400, detail="عذراً، نفاد المخزون لهذا المنتج حالياً!")
         
         item_id, account_data = item
-        
-        # تحديث الحساب كمباع
+
+        cur.execute("UPDATE users SET balance = balance - %s WHERE id = %s;", (order.amount, order.user_id))
         cur.execute("UPDATE product_items SET is_sold = TRUE WHERE id = %s;", (item_id,))
-        
-        # تسجيل الطلب مع رقم المعاملة
+
         cur.execute("""
             INSERT INTO orders (user_id, total_amount, txid, payment_status, order_status) 
-            VALUES (%s, %s, %s, 'paid', 'completed') RETURNING id;
-        """, (order.user_id, order.amount, order.txid))
+            VALUES (%s, %s, 'BALANCE_PAYMENT', 'paid', 'completed') RETURNING id;
+        """, (order.user_id, order.amount))
         
         order_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
         conn.close()
-        
+
         return {
-            "status": "success", 
-            "order_id": order_id, 
+            "status": "success",
+            "order_id": order_id,
             "account_details": account_data,
-            "message": "تم التحقق من الدفع وتسليم الحساب بنجاح!"
+            "message": "تم الشراء بنجاح من رصيد المحفظة وتسليم الحساب!"
         }
     except HTTPException as he:
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# مسار فحص المخزون للمنتج
 @app.get("/check-stock/{product_id}")
 def check_stock(product_id: int):
     try:
@@ -216,10 +252,37 @@ def check_stock(product_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# مسارات لوحة التحكم للإضافة والحذف
+@app.get("/get-all-orders")
+def get_all_orders():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT orders.id, users.full_name, users.email, orders.total_amount, orders.txid, orders.payment_status 
+            FROM orders 
+            JOIN users ON orders.user_id = users.id 
+            ORDER BY orders.id DESC;
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        orders = [{
+            "order_id": r[0],
+            "customer_name": r[1],
+            "customer_email": r[2],
+            "amount": r[3],
+            "txid": r[4],
+            "status": r[5]
+        } for r in rows]
+        
+        return {"status": "success", "orders": orders}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/add-account")
 def add_account(item: AddAccountRequest):
-    if item.admin_secret != "123":
+    if item.admin_secret != "my_secret_admin_123":
         raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
     try:
         conn = get_db_connection()
@@ -248,7 +311,7 @@ def get_all_accounts():
 
 @app.post("/delete-account")
 def delete_account(item: DeleteAccountRequest):
-    if item.admin_secret != "123":
+    if item.admin_secret != "my_secret_admin_123":
         raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
     try:
         conn = get_db_connection()
@@ -258,33 +321,5 @@ def delete_account(item: DeleteAccountRequest):
         cur.close()
         conn.close()
         return {"status": "success", "message": "تم حذف الحساب بنجاح!"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-@app.get("/get-all-orders")
-def get_all_orders():
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        # جلب الطلبات مع معلومات المستخدمين والـ txid
-        cur.execute("""
-            SELECT orders.id, users.full_name, users.email, orders.total_amount, orders.txid, orders.payment_status 
-            FROM orders 
-            JOIN users ON orders.user_id = users.id 
-            ORDER BY orders.id DESC;
-        """)
-        rows = cur.fetchall()
-        cur.close()
-        conn.close()
-        
-        orders = [{
-            "order_id": r[0],
-            "customer_name": r[1],
-            "customer_email": r[2],
-            "amount": r[3],
-            "txid": r[4],
-            "status": r[5]
-        } for r in rows]
-        
-        return {"status": "success", "orders": orders}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
