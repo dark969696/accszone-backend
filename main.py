@@ -70,7 +70,7 @@ def startup_event():
 
 @app.get("/")
 def read_root():
-    return {"message": "AccsZone Backend is running with Separated Orders & Deposits!"}
+    return {"message": "AccsZone Backend is running smoothly!"}
 
 class SignupRequest(BaseModel):
     full_name: str
@@ -197,6 +197,34 @@ def get_user_orders(req: BalanceCheckRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# مسار جلب طلبات الشحن الخاصة بالمستخدم (تعرض المعلق والمعتمد)
+@app.post("/get-user-deposits")
+def get_user_deposits(req: BalanceCheckRequest):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, total_amount, txid, payment_status, order_status 
+            FROM orders 
+            WHERE user_id = %s AND order_status LIKE 'deposit%%'
+            ORDER BY id DESC;
+        """, (req.user_id,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        deposits = [{
+            "order_id": r[0],
+            "amount": r[1],
+            "txid": r[2],
+            "payment_status": r[3],
+            "order_status": r[4]
+        } for r in rows]
+
+        return {"status": "success", "deposits": deposits}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/deposit")
 def deposit_balance(req: DepositRequest):
     try:
@@ -242,7 +270,6 @@ def get_pending_deposits(admin_secret: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# مسار جديد للأدمن لجلب جميع طلبات شراء الحسابات فقط وفصلها عن الشحن
 @app.get("/get-all-purchases")
 def get_all_purchases(admin_secret: str):
     if admin_secret != "my_secret_admin_123":
@@ -326,7 +353,6 @@ def buy_with_balance(order: BalanceOrderRequest):
         cur.execute("UPDATE users SET balance = balance - %s WHERE id = %s;", (order.amount, order.user_id))
         cur.execute("UPDATE product_items SET is_sold = TRUE WHERE id = ANY(%s);", (item_ids,))
 
-        # حفظ الطلب بحالة product_purchase عشان يتفصل تماماً عن الإيداعات
         cur.execute("""
             INSERT INTO orders (user_id, total_amount, txid, payment_status, order_status, account_details) 
             VALUES (%s, %s, 'BALANCE_PAYMENT', 'paid', 'product_purchase', %s) RETURNING id;
