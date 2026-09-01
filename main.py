@@ -36,7 +36,7 @@ def init_db():
             total_amount FLOAT NOT NULL,
             txid VARCHAR(255),
             payment_status VARCHAR(50) DEFAULT 'pending',
-            order_status VARCHAR(50) DEFAULT 'completed',
+            order_status VARCHAR(50) DEFAULT 'deposit_request',
             account_details TEXT
         );
         CREATE TABLE IF NOT EXISTS users (
@@ -52,7 +52,7 @@ def init_db():
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS balance FLOAT DEFAULT 0.0;")
         cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS txid VARCHAR(255);")
         cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS account_details TEXT;")
-        cur.execute("ALTER TABLE orders ALTER COLUMN payment_status SET DEFAULT 'pending';")
+        cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_status VARCHAR(50) DEFAULT 'deposit_request';")
         conn.commit()
     except Exception:
         conn.rollback()
@@ -70,7 +70,7 @@ def startup_event():
 
 @app.get("/")
 def read_root():
-    return {"message": "AccsZone Backend is running with User Orders History!"}
+    return {"message": "AccsZone Backend is running with Separated Orders & Deposits!"}
 
 class SignupRequest(BaseModel):
     full_name: str
@@ -169,7 +169,6 @@ def get_user_balance(req: BalanceCheckRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# مسار جلب مشتريات وطلبات مستخدم معين
 @app.post("/get-user-orders")
 def get_user_orders(req: BalanceCheckRequest):
     try:
@@ -178,7 +177,7 @@ def get_user_orders(req: BalanceCheckRequest):
         cur.execute("""
             SELECT id, total_amount, txid, payment_status, order_status, account_details 
             FROM orders 
-            WHERE user_id = %s AND (payment_status = 'paid' OR payment_status = 'approved')
+            WHERE user_id = %s AND order_status = 'product_purchase'
             ORDER BY id DESC;
         """, (req.user_id,))
         rows = cur.fetchall()
@@ -191,7 +190,7 @@ def get_user_orders(req: BalanceCheckRequest):
             "txid": r[2],
             "payment_status": r[3],
             "order_status": r[4],
-            "account_details": r[5] or "غير متاح (طلب شحن رصيد)"
+            "account_details": r[5]
         } for r in rows]
 
         return {"status": "success", "orders": orders}
@@ -243,6 +242,35 @@ def get_pending_deposits(admin_secret: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# مسار جديد للأدمن لجلب جميع طلبات شراء الحسابات فقط وفصلها عن الشحن
+@app.get("/get-all-purchases")
+def get_all_purchases(admin_secret: str):
+    if admin_secret != "my_secret_admin_123":
+        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT orders.id, users.full_name, users.email, orders.total_amount, orders.account_details 
+            FROM orders 
+            JOIN users ON orders.user_id = users.id 
+            WHERE orders.order_status = 'product_purchase'
+            ORDER BY orders.id DESC;
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        purchases = [{
+            "order_id": r[0],
+            "customer_name": r[1],
+            "customer_email": r[2],
+            "total_amount": r[3],
+            "account_details": r[4]
+        } for r in rows]
+        return {"status": "success", "purchases": purchases}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/approve-deposit")
 def approve_deposit(req: ApproveDepositRequest):
     if req.admin_secret != "my_secret_admin_123":
@@ -259,7 +287,7 @@ def approve_deposit(req: ApproveDepositRequest):
         if payment_status == 'approved':
             raise HTTPException(status_code=400, detail="تم اعتماد هذا الطلب مسبقاً!")
 
-        cur.execute("UPDATE orders SET payment_status = 'approved', order_status = 'completed' WHERE id = %s;", (req.order_id,))
+        cur.execute("UPDATE orders SET payment_status = 'approved', order_status = 'deposit_approved' WHERE id = %s;", (req.order_id,))
         cur.execute("UPDATE users SET balance = balance + %s WHERE id = %s RETURNING balance;", (amount, user_id))
         conn.commit()
         cur.close()
@@ -298,10 +326,10 @@ def buy_with_balance(order: BalanceOrderRequest):
         cur.execute("UPDATE users SET balance = balance - %s WHERE id = %s;", (order.amount, order.user_id))
         cur.execute("UPDATE product_items SET is_sold = TRUE WHERE id = ANY(%s);", (item_ids,))
 
-        # حفظ تفاصيل الحسابات المشتراة مباشرة داخل الطلب
+        # حفظ الطلب بحالة product_purchase عشان يتفصل تماماً عن الإيداعات
         cur.execute("""
             INSERT INTO orders (user_id, total_amount, txid, payment_status, order_status, account_details) 
-            VALUES (%s, %s, 'BALANCE_PAYMENT', 'paid', 'completed', %s) RETURNING id;
+            VALUES (%s, %s, 'BALANCE_PAYMENT', 'paid', 'product_purchase', %s) RETURNING id;
         """, (order.user_id, order.amount, combined_accounts))
         
         order_id = cur.fetchone()[0]
