@@ -20,7 +20,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
-# إنشاء جداول قاعدة البيانات أوتوماتيكياً
+# إنشاء جداول قاعدة البيانات أوتوماتيكياً مع ضمان إضافة عمود الـ txid
 def init_db():
     conn = get_db_connection()
     cur = conn.cursor()
@@ -46,6 +46,14 @@ def init_db():
             password VARCHAR(255) NOT NULL
         );
     """)
+    
+    # التأكد من وجود عمود txid في جدول orders القديم لو كان موجود مسبقاً
+    try:
+        cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS txid VARCHAR(255);")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
     # إضافة حساب تجريبي للمنتج لو الجدول فاضي
     cur.execute("SELECT COUNT(*) FROM product_items;")
     if cur.fetchone()[0] == 0:
@@ -60,7 +68,7 @@ def startup_event():
 
 @app.get("/")
 def read_root():
-    return {"message": "AccsZone Backend is running with USDT payment and DB support!"}
+    return {"message": "AccsZone Backend is running with automated DB migration & USDT support!"}
 
 # نماذج البيانات (Pydantic Models)
 class SignupRequest(BaseModel):
@@ -149,7 +157,7 @@ def login_user(user: LoginRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# مسار إتمام الطلب والدفع بـ USDT
+# مسار إتمام الطلب والدفع بـ USDT مع فحص تكرار الـ TXID
 @app.post("/create-usdt-order")
 def create_usdt_order(order: USDTOrderRequest):
     try:
