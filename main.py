@@ -191,3 +191,36 @@ def delete_account(item: DeleteAccountRequest):
         return {"status": "success", "message": "تم حذف الحساب بنجاح!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+@app.post("/login")
+def login_user(user: LoginRequest):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # البحث عن المستخدم بالإيميل وكلمة المرور
+        cur.execute("SELECT id, full_name, email FROM users WHERE email = %s AND password = %s;", (user.email, user.password))
+        db_user = cur.fetchone()
+        
+        cur.close()
+        conn.close()
+        
+        if not db_user:
+            raise HTTPException(status_code=400, detail="البريد الإلكتروني أو كلمة المرور غير صحيحة!")
+            
+        return {
+            "status": "success",
+            "message": "تم تسجيل الدخول بنجاح!",
+            "user": {
+                "id": db_user[0],
+                "full_name": db_user[1],
+                "email": db_user[2]
+            }
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
