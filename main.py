@@ -35,8 +35,9 @@ def init_db():
             id SERIAL PRIMARY KEY,
             user_id INT NOT NULL,
             total_amount FLOAT NOT NULL,
-            payment_status VARCHAR(50),
-            order_status VARCHAR(50)
+            txid VARCHAR(255),
+            payment_status VARCHAR(50) DEFAULT 'paid',
+            order_status VARCHAR(50) DEFAULT 'completed'
         );
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
@@ -59,22 +60,41 @@ def startup_event():
 
 @app.get("/")
 def read_root():
-    return {"message": "AccsZone Backend is running and DB is initialized!"}
+    return {"message": "AccsZone Backend is running with USDT payment and DB support!"}
 
-# نموذج طلب التسجيل
+# نماذج البيانات (Pydantic Models)
 class SignupRequest(BaseModel):
     full_name: str
     email: str
     password: str
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class USDTOrderRequest(BaseModel):
+    user_id: int
+    product_id: int
+    amount: float
+    txid: str
+
+class AddAccountRequest(BaseModel):
+    product_id: int
+    account_data: str
+    admin_secret: str
+
+class DeleteAccountRequest(BaseModel):
+    account_id: int
+    admin_secret: str
+
+
+# مسار التسجيل (Signup)
 @app.post("/signup")
 def signup_user(user: SignupRequest):
-    # 1. التحقق من صحة صيغة الإيميل باستخدام Regular Expression
     email_regex = r"^[\w\.-]+@[\w\.-]+\.\w+$"
     if not re.match(email_regex, user.email):
         raise HTTPException(status_code=400, detail="صيغة البريد الإلكتروني غير صحيحة!")
     
-    # 2. التحقق من طول كلمة المرور (ألا تقل عن 8 خانات)
     if len(user.password) < 8:
         raise HTTPException(status_code=400, detail="كلمة المرور يجب ألا تقل عن 8 خانات!")
         
@@ -82,13 +102,10 @@ def signup_user(user: SignupRequest):
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # 3. التحقق مما إذا كان الإيميل مستخدماً من قبل
         cur.execute("SELECT id FROM users WHERE email = %s;", (user.email,))
-        existing_user = cur.fetchone()
-        if existing_user:
+        if cur.fetchone():
             raise HTTPException(status_code=400, detail="البريد الإلكتروني مستخدم بالفعل، جرب إيميل آخر!")
             
-        # 4. إدخال المستخدم الجديد في قاعدة البيانات
         cur.execute(
             "INSERT INTO users (full_name, email, password) VALUES (%s, %s, %s) RETURNING id;",
             (user.full_name, user.email, user.password)
@@ -101,49 +118,97 @@ def signup_user(user: SignupRequest):
         return {
             "status": "success",
             "message": "تم إنشاء الحساب بنجاح!",
-            "user": {
-                "id": user_id,
-                "full_name": user.full_name,
-                "email": user.email
-            }
+            "user": {"id": user_id, "full_name": user.full_name, "email": user.email}
         }
     except HTTPException as he:
         raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# باقي المسارات (الطلبات، وإضافة وحذف الحسابات)
-class OrderRequest(BaseModel):
-    user_id: int
-    product_id: int
-    amount: float
-
-@app.post("/create-order")
-def create_order(order: OrderRequest):
+# مسار تسجيل الدخول (Login)
+@app.post("/login")
+def login_user(user: LoginRequest):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
+        cur.execute("SELECT id, full_name, email FROM users WHERE email = %s AND password = %s;", (user.email, user.password))
+        db_user = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if not db_user:
+            raise HTTPException(status_code=400, detail="البريد الإلكتروني أو كلمة المرور غير صحيحة!")
+            
+        return {
+            "status": "success",
+            "message": "تم تسجيل الدخول بنجاح!",
+            "user": {"id": db_user[0], "full_name": db_user[1], "email": db_user[2]}
+        }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# مسار إتمام الطلب والدفع بـ USDT
+@app.post("/create-usdt-order")
+def create_usdt_order(order: USDTOrderRequest):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # التأكد أن الـ TXID غير مستخدم من قبل لمنع التلاعب
+        cur.execute("SELECT id FROM orders WHERE txid = %s;", (order.txid,))
+        if cur.fetchone():
+            raise HTTPException(status_code=400, detail="رقم المعاملة (TXID) مستخدم من قبل!")
+
+        # فحص المخزون
         cur.execute("SELECT id, account_data FROM product_items WHERE product_id = %s AND is_sold = FALSE LIMIT 1;", (order.product_id,))
         item = cur.fetchone()
         if not item:
-            raise HTTPException(status_code=400, detail="عذراً، النفاد تام من هذا المنتج حالياً!")
+            raise HTTPException(status_code=400, detail="عذراً، نفاد المخزون لهذا المنتج حالياً!")
+        
         item_id, account_data = item
+        
+        # تحديث الحساب كمباع
         cur.execute("UPDATE product_items SET is_sold = TRUE WHERE id = %s;", (item_id,))
-        cur.execute("INSERT INTO orders (user_id, total_amount, payment_status, order_status) VALUES (%s, %s, 'paid', 'completed') RETURNING id;", 
-                    (order.user_id, order.amount))
+        
+        # تسجيل الطلب مع رقم المعاملة
+        cur.execute("""
+            INSERT INTO orders (user_id, total_amount, txid, payment_status, order_status) 
+            VALUES (%s, %s, %s, 'paid', 'completed') RETURNING id;
+        """, (order.user_id, order.amount, order.txid))
+        
         order_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
         conn.close()
-        return {"status": "success", "order_id": order_id, "account_details": account_data}
+        
+        return {
+            "status": "success", 
+            "order_id": order_id, 
+            "account_details": account_data,
+            "message": "تم التحقق من الدفع وتسليم الحساب بنجاح!"
+        }
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-class AddAccountRequest(BaseModel):
-    product_id: int
-    account_data: str
-    admin_secret: str
+# مسار فحص المخزون للمنتج
+@app.get("/check-stock/{product_id}")
+def check_stock(product_id: int):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM product_items WHERE product_id = %s AND is_sold = FALSE;", (product_id,))
+        count = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        return {"status": "success", "available_stock": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
+# مسارات لوحة التحكم للإضافة والحذف
 @app.post("/add-account")
 def add_account(item: AddAccountRequest):
     if item.admin_secret != "123":
@@ -173,10 +238,6 @@ def get_all_accounts():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-class DeleteAccountRequest(BaseModel):
-    account_id: int
-    admin_secret: str
-
 @app.post("/delete-account")
 def delete_account(item: DeleteAccountRequest):
     if item.admin_secret != "123":
@@ -189,50 +250,5 @@ def delete_account(item: DeleteAccountRequest):
         cur.close()
         conn.close()
         return {"status": "success", "message": "تم حذف الحساب بنجاح!"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-class LoginRequest(BaseModel):
-    email: str
-    password: str
-
-@app.post("/login")
-def login_user(user: LoginRequest):
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # البحث عن المستخدم بالإيميل وكلمة المرور
-        cur.execute("SELECT id, full_name, email FROM users WHERE email = %s AND password = %s;", (user.email, user.password))
-        db_user = cur.fetchone()
-        
-        cur.close()
-        conn.close()
-        
-        if not db_user:
-            raise HTTPException(status_code=400, detail="البريد الإلكتروني أو كلمة المرور غير صحيحة!")
-            
-        return {
-            "status": "success",
-            "message": "تم تسجيل الدخول بنجاح!",
-            "user": {
-                "id": db_user[0],
-                "full_name": db_user[1],
-                "email": db_user[2]
-            }
-        }
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-@app.get("/check-stock/{product_id}")
-def check_stock(product_id: int):
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM product_items WHERE product_id = %s AND is_sold = FALSE;", (product_id,))
-        count = cur.fetchone()[0]
-        cur.close()
-        conn.close()
-        return {"status": "success", "available_stock": count}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
