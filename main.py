@@ -143,7 +143,7 @@ class DeleteAccountRequest(BaseModel):
 
 @app.post("/delete-account")
 def delete_account(item: DeleteAccountRequest):
-    if item.admin_secret != "my_secret_admin_123":
+    if item.admin_secret != "123":
         raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
         
     try:
