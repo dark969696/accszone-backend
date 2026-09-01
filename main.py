@@ -68,7 +68,7 @@ def startup_event():
 
 @app.get("/")
 def read_root():
-    return {"message": "AccsZone Backend is running with Balance Wallet & Admin Approval System!"}
+    return {"message": "AccsZone Backend is running smoothly!"}
 
 class SignupRequest(BaseModel):
     full_name: str
@@ -88,6 +88,7 @@ class BalanceOrderRequest(BaseModel):
     user_id: int
     product_id: int
     amount: float
+    quantity: int
 
 class BalanceCheckRequest(BaseModel):
     user_id: int
@@ -99,11 +100,9 @@ class ApproveDepositRequest(BaseModel):
 class AddAccountRequest(BaseModel):
     product_id: int
     account_data: str
-    admin_secret: str
 
 class DeleteAccountRequest(BaseModel):
     account_id: int
-    admin_secret: str
 
 @app.post("/signup")
 def signup_user(user: SignupRequest):
@@ -151,7 +150,6 @@ def login_user(user: LoginRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# مسار جلب رصيد المستخدم مباشرة باستخدام الـ user_id فقط
 @app.post("/get-user-balance")
 def get_user_balance(req: BalanceCheckRequest):
     try:
@@ -161,10 +159,8 @@ def get_user_balance(req: BalanceCheckRequest):
         row = cur.fetchone()
         cur.close()
         conn.close()
-        
         if not row:
             raise HTTPException(status_code=404, detail="المستخدم غير موجود!")
-            
         return {"status": "success", "balance": row[0]}
     except HTTPException as he:
         raise he
@@ -176,7 +172,6 @@ def deposit_balance(req: DepositRequest):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
         cur.execute("SELECT id FROM orders WHERE txid = %s;", (req.txid,))
         if cur.fetchone():
             raise HTTPException(status_code=400, detail="رقم المعاملة (TXID) مستخدم من قبل!")
@@ -186,15 +181,10 @@ def deposit_balance(req: DepositRequest):
             VALUES (%s, %s, %s, 'pending', 'deposit_request') RETURNING id;
         """, (req.user_id, req.amount, req.txid))
         
-        order_id = cur.fetchone()[0]
         conn.commit()
         cur.close()
         conn.close()
-
-        return {
-            "status": "success",
-            "message": "تم إرسال طلب الشحن بنجاح وهو قيد المراجعة من الإدارة وسيتم إضافة الرصيد فور التحقق!"
-        }
+        return {"status": "success", "message": "تم إرسال طلب الشحن بنجاح وهو قيد المراجعة من الإدارة!"}
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -217,16 +207,7 @@ def get_pending_deposits(admin_secret: str):
         rows = cur.fetchall()
         cur.close()
         conn.close()
-        
-        deposits = [{
-            "order_id": r[0],
-            "user_id": r[1],
-            "customer_name": r[2],
-            "customer_email": r[3],
-            "amount": r[4],
-            "txid": r[5]
-        } for r in rows]
-        
+        deposits = [{"order_id": r[0], "user_id": r[1], "customer_name": r[2], "customer_email": r[3], "amount": r[4], "txid": r[5]} for r in rows]
         return {"status": "success", "deposits": deposits}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -238,7 +219,6 @@ def approve_deposit(req: ApproveDepositRequest):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        
         cur.execute("SELECT user_id, total_amount, payment_status FROM orders WHERE id = %s;", (req.order_id,))
         order = cur.fetchone()
         if not order:
@@ -250,16 +230,10 @@ def approve_deposit(req: ApproveDepositRequest):
 
         cur.execute("UPDATE orders SET payment_status = 'approved', order_status = 'completed' WHERE id = %s;", (req.order_id,))
         cur.execute("UPDATE users SET balance = balance + %s WHERE id = %s RETURNING balance;", (amount, user_id))
-        new_balance = cur.fetchone()[0]
-
         conn.commit()
         cur.close()
         conn.close()
-
-        return {
-            "status": "success",
-            "message": f"تم اعتماد الإيداع بنجاح وإضافة ${amount} لحساب المستخدم!"
-        }
+        return {"status": "success", "message": f"تم اعتماد الإيداع بنجاح وإضافة ${amount} لحساب المستخدم!"}
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -280,15 +254,18 @@ def buy_with_balance(order: BalanceOrderRequest):
         if current_balance < order.amount:
             raise HTTPException(status_code=400, detail="رصيدك غير كافي! يرجى شحن المحفظة أولاً.")
 
-        cur.execute("SELECT id, account_data FROM product_items WHERE product_id = %s AND is_sold = FALSE LIMIT 1;", (order.product_id,))
-        item = cur.fetchone()
-        if not item:
-            raise HTTPException(status_code=400, detail="عذراً، نفاد المخزون لهذا المنتج حالياً!")
+        cur.execute("SELECT id, account_data FROM product_items WHERE product_id = %s AND is_sold = FALSE LIMIT %s;", (order.product_id, order.quantity))
+        items = cur.fetchall()
         
-        item_id, account_data = item
+        if len(items) < order.quantity:
+            raise HTTPException(status_code=400, detail=f"عذراً، المخزون المتاح حالياً ({len(items)}) لا يكفي الكمية المطلوبة ({order.quantity})!")
+
+        item_ids = [item[0] for item in items]
+        accounts_data_list = [item[1] for item in items]
+        combined_accounts = "\n---\n".join(accounts_data_list)
 
         cur.execute("UPDATE users SET balance = balance - %s WHERE id = %s;", (order.amount, order.user_id))
-        cur.execute("UPDATE product_items SET is_sold = TRUE WHERE id = %s;", (item_id,))
+        cur.execute("UPDATE product_items SET is_sold = TRUE WHERE id = ANY(%s);", (item_ids,))
 
         cur.execute("""
             INSERT INTO orders (user_id, total_amount, txid, payment_status, order_status) 
@@ -303,8 +280,8 @@ def buy_with_balance(order: BalanceOrderRequest):
         return {
             "status": "success",
             "order_id": order_id,
-            "account_details": account_data,
-            "message": "تم الشراء بنجاح من رصيد المحفظة وتسليم الحساب!"
+            "account_details": combined_accounts,
+            "message": "تم الشراء بنجاح من رصيد المحفظة وتسليم الحسابات!"
         }
     except HTTPException as he:
         raise he
@@ -324,10 +301,9 @@ def check_stock(product_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# مسار إضافة حساب (بدون كلمة سر)
 @app.post("/add-account")
 def add_account(item: AddAccountRequest):
-    if item.admin_secret != "1":
-        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -353,10 +329,9 @@ def get_all_accounts():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# مسار حذف حساب (بدون كلمة سر)
 @app.post("/delete-account")
 def delete_account(item: DeleteAccountRequest):
-    if item.admin_secret != "1":
-        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
     try:
         conn = get_db_connection()
         cur = conn.cursor()
