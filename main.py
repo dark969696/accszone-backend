@@ -6,6 +6,7 @@ import psycopg2
 
 app = FastAPI()
 
+# السماح للواجهة بالاتصال بالسيرفر
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -38,7 +39,7 @@ def init_db():
             order_status VARCHAR(50)
         );
     """)
-    # إضافة حساب تجريبي لو الجدول فاضي عشان التجربة تنجح فوراً
+    # إضافة حساب تجريبي لو الجدول فاضي أول مرة
     cur.execute("SELECT COUNT(*) FROM product_items;")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO product_items (product_id, account_data, is_sold) VALUES (1, 'USA_FB_Email: user@test.com | Pass: 123456 | 2FA: ABCXYZ', FALSE);")
@@ -87,5 +88,29 @@ def create_order(order: OrderRequest):
             "order_id": order_id,
             "account_details": account_data
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class AddAccountRequest(BaseModel):
+    product_id: int
+    account_data: str
+    admin_secret: str
+
+@app.post("/add-account")
+def add_account(item: AddAccountRequest):
+    if item.admin_secret != "my_secret_admin_123":
+        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
+        
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO product_items (product_id, account_data, is_sold) VALUES (%s, %s, FALSE);",
+            (item.product_id, item.account_data)
+        )
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"status": "success", "message": "تم إضافة الحساب بنجاح للمخزون!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
