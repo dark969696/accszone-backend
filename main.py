@@ -42,7 +42,7 @@ def init_db():
     # إضافة حساب تجريبي لو الجدول فاضي أول مرة
     cur.execute("SELECT COUNT(*) FROM product_items;")
     if cur.fetchone()[0] == 0:
-        cur.execute("INSERT INTO product_items (product_id, account_data, is_sold) VALUES (1, 'USA_FB_Email: user@test.com | Pass: 123456 | 2FA: ABCXYZ', FALSE);")
+        cur.execute("INSERT INTO product_items (product_id, account_data, is_sold) VALUES (1, 'Grindr_Account_Demo: user@test.com | Pass: 123456', FALSE);")
     conn.commit()
     cur.close()
     conn.close()
@@ -98,7 +98,7 @@ class AddAccountRequest(BaseModel):
 
 @app.post("/add-account")
 def add_account(item: AddAccountRequest):
-    if item.admin_secret != "123":
+    if item.admin_secret != "my_secret_admin_123":
         raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
         
     try:
@@ -112,5 +112,27 @@ def add_account(item: AddAccountRequest):
         cur.close()
         conn.close()
         return {"status": "success", "message": "تم إضافة الحساب بنجاح للمخزون!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/get-all-accounts")
+def get_all_accounts():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, product_id, account_data, is_sold FROM product_items ORDER BY id DESC;")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        accounts = []
+        for row in rows:
+            accounts.append({
+                "id": row[0],
+                "product_id": row[1],
+                "account_data": row[2],
+                "is_sold": row[3]
+            })
+        return {"status": "success", "accounts": accounts}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
