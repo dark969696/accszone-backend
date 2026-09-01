@@ -260,3 +260,31 @@ def delete_account(item: DeleteAccountRequest):
         return {"status": "success", "message": "تم حذف الحساب بنجاح!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+@app.get("/get-all-orders")
+def get_all_orders():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        # جلب الطلبات مع معلومات المستخدمين والـ txid
+        cur.execute("""
+            SELECT orders.id, users.full_name, users.email, orders.total_amount, orders.txid, orders.payment_status 
+            FROM orders 
+            JOIN users ON orders.user_id = users.id 
+            ORDER BY orders.id DESC;
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        
+        orders = [{
+            "order_id": r[0],
+            "customer_name": r[1],
+            "customer_email": r[2],
+            "amount": r[3],
+            "txid": r[4],
+            "status": r[5]
+        } for r in rows]
+        
+        return {"status": "success", "orders": orders}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
