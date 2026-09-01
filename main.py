@@ -6,10 +6,9 @@ import psycopg2
 
 app = FastAPI()
 
-# السماح للواجهة بالاتصال بالسيرفر
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # السماح لأي موقع بالاتصال (أو حط رابط موقعك ع Vercel تحديدا)
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -20,9 +19,40 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL)
 
+# إنشاء الجداول أوتوماتيك عند تشغيل السيرفر
+def init_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS product_items (
+            id SERIAL PRIMARY KEY,
+            product_id INT NOT NULL,
+            account_data TEXT NOT NULL,
+            is_sold BOOLEAN DEFAULT FALSE
+        );
+        CREATE TABLE IF NOT EXISTS orders (
+            id SERIAL PRIMARY KEY,
+            user_id INT NOT NULL,
+            total_amount FLOAT NOT NULL,
+            payment_status VARCHAR(50),
+            order_status VARCHAR(50)
+        );
+    """)
+    # إضافة حساب تجريبي لو الجدول فاضي عشان التجربة تنجح فوراً
+    cur.execute("SELECT COUNT(*) FROM product_items;")
+    if cur.fetchone()[0] == 0:
+        cur.execute("INSERT INTO product_items (product_id, account_data, is_sold) VALUES (1, 'USA_FB_Email: user@test.com | Pass: 123456 | 2FA: ABCXYZ', FALSE);")
+    conn.commit()
+    cur.close()
+    conn.close()
+
+@app.on_event("startup")
+def startup_event():
+    init_db()
+
 @app.get("/")
 def read_root():
-    return {"message": "AccsZone Backend is running successfully!"}
+    return {"message": "AccsZone Backend is running and DB is initialized!"}
 
 class OrderRequest(BaseModel):
     user_id: int
