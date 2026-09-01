@@ -98,7 +98,7 @@ class AddAccountRequest(BaseModel):
 
 @app.post("/add-account")
 def add_account(item: AddAccountRequest):
-    if item.admin_secret != "my_secret_admin_123":
+    if item.admin_secret != "123":
         raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
         
     try:
