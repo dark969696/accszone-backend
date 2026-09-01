@@ -30,6 +30,11 @@ def init_db():
             account_data TEXT NOT NULL,
             is_sold BOOLEAN DEFAULT FALSE
         );
+        CREATE TABLE IF NOT EXISTS products (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            price FLOAT NOT NULL DEFAULT 2.50
+        );
         CREATE TABLE IF NOT EXISTS orders (
             id SERIAL PRIMARY KEY,
             user_id INT NOT NULL,
@@ -57,9 +62,15 @@ def init_db():
     except Exception:
         conn.rollback()
 
+    # إدخال منتج افتراضي (رقم 1) لو مش موجود
+    cur.execute("SELECT COUNT(*) FROM products;")
+    if cur.fetchone()[0] == 0:
+        cur.execute("INSERT INTO products (id, name, price) VALUES (1, 'Grindr Account', 2.50);")
+
     cur.execute("SELECT COUNT(*) FROM product_items;")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO product_items (product_id, account_data, is_sold) VALUES (1, 'Grindr_Account_Demo: user@test.com | Pass: 123456', FALSE);")
+    
     conn.commit()
     cur.close()
     conn.close()
@@ -105,6 +116,11 @@ class AddAccountRequest(BaseModel):
 
 class DeleteAccountRequest(BaseModel):
     account_id: int
+
+class UpdatePriceRequest(BaseModel):
+    product_id: int
+    new_price: float
+    admin_secret: str
 
 @app.post("/signup")
 def signup_user(user: SignupRequest):
@@ -197,7 +213,6 @@ def get_user_orders(req: BalanceCheckRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# مسار جلب طلبات الشحن الخاصة بالمستخدم (تعرض المعلق والمعتمد)
 @app.post("/get-user-deposits")
 def get_user_deposits(req: BalanceCheckRequest):
     try:
@@ -426,12 +441,41 @@ def delete_account(item: DeleteAccountRequest):
         return {"status": "success", "message": "تم حذف الحساب بنجاح!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/update-product-price")
+def update_product_price(req: UpdatePriceRequest):
+    if req.admin_secret != "my_secret_admin_123":
+        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM products WHERE id = %s;", (req.product_id,))
+        if not cur.fetchone():
+            cur.execute("INSERT INTO products (id, name, price) VALUES (%s, %s, %s);", (req.product_id, f"Product {req.product_id}", req.new_price))
+        else:
+            cur.execute("UPDATE products SET price = %s WHERE id = %s;", (req.new_price, req.product_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"status": "success", "message": "تم تحديث السعر بنجاح!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/get-product-price/{product_id}")
+def get_product_price(product_id: int):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT price FROM products WHERE id = %s;", (product_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not row:
+            return {"status": "success", "price": 2.50}  # السعر الافتراضي
+        return {"status": "success", "price": row[0]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
-@app.get("/api/orders")
-def get_user_orders(user_id: int):
-    # استعلم من قاعدة البيانات عن طلبات هذا المستخدم بالتحديد
-    # مثال باستخدام SQLAlchemy أو الكود الحالي عندك:
-    orders = db.query(Order).filter(Order.user_id == user_id).all()
-    return orders
