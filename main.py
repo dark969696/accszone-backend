@@ -36,7 +36,8 @@ def init_db():
             total_amount FLOAT NOT NULL,
             txid VARCHAR(255),
             payment_status VARCHAR(50) DEFAULT 'pending',
-            order_status VARCHAR(50) DEFAULT 'completed'
+            order_status VARCHAR(50) DEFAULT 'completed',
+            account_details TEXT
         );
         CREATE TABLE IF NOT EXISTS users (
             id SERIAL PRIMARY KEY,
@@ -50,6 +51,7 @@ def init_db():
     try:
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS balance FLOAT DEFAULT 0.0;")
         cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS txid VARCHAR(255);")
+        cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS account_details TEXT;")
         cur.execute("ALTER TABLE orders ALTER COLUMN payment_status SET DEFAULT 'pending';")
         conn.commit()
     except Exception:
@@ -68,7 +70,7 @@ def startup_event():
 
 @app.get("/")
 def read_root():
-    return {"message": "AccsZone Backend is running smoothly!"}
+    return {"message": "AccsZone Backend is running with User Orders History!"}
 
 class SignupRequest(BaseModel):
     full_name: str
@@ -164,6 +166,35 @@ def get_user_balance(req: BalanceCheckRequest):
         return {"status": "success", "balance": row[0]}
     except HTTPException as he:
         raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# مسار جلب مشتريات وطلبات مستخدم معين
+@app.post("/get-user-orders")
+def get_user_orders(req: BalanceCheckRequest):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, total_amount, txid, payment_status, order_status, account_details 
+            FROM orders 
+            WHERE user_id = %s AND (payment_status = 'paid' OR payment_status = 'approved')
+            ORDER BY id DESC;
+        """, (req.user_id,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+
+        orders = [{
+            "order_id": r[0],
+            "total_amount": r[1],
+            "txid": r[2],
+            "payment_status": r[3],
+            "order_status": r[4],
+            "account_details": r[5] or "غير متاح (طلب شحن رصيد)"
+        } for r in rows]
+
+        return {"status": "success", "orders": orders}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -267,10 +298,11 @@ def buy_with_balance(order: BalanceOrderRequest):
         cur.execute("UPDATE users SET balance = balance - %s WHERE id = %s;", (order.amount, order.user_id))
         cur.execute("UPDATE product_items SET is_sold = TRUE WHERE id = ANY(%s);", (item_ids,))
 
+        # حفظ تفاصيل الحسابات المشتراة مباشرة داخل الطلب
         cur.execute("""
-            INSERT INTO orders (user_id, total_amount, txid, payment_status, order_status) 
-            VALUES (%s, %s, 'BALANCE_PAYMENT', 'paid', 'completed') RETURNING id;
-        """, (order.user_id, order.amount))
+            INSERT INTO orders (user_id, total_amount, txid, payment_status, order_status, account_details) 
+            VALUES (%s, %s, 'BALANCE_PAYMENT', 'paid', 'completed', %s) RETURNING id;
+        """, (order.user_id, order.amount, combined_accounts))
         
         order_id = cur.fetchone()[0]
         conn.commit()
@@ -301,7 +333,6 @@ def check_stock(product_id: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# مسار إضافة حساب (بدون كلمة سر)
 @app.post("/add-account")
 def add_account(item: AddAccountRequest):
     try:
@@ -329,7 +360,6 @@ def get_all_accounts():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# مسار حذف حساب (بدون كلمة سر)
 @app.post("/delete-account")
 def delete_account(item: DeleteAccountRequest):
     try:
