@@ -358,23 +358,29 @@ def get_all_users(admin_secret: str):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("""
-            SELECT u.id, u.full_name, u.email, u.balance, u.is_blocked,
-                   (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id AND o.payment_status = 'approved' AND o.order_status = 'deposit_approved') as total_deposits
-            FROM users u 
-            ORDER BY u.id DESC;
-        """)
-        rows = cur.fetchall()
+        
+        # استعلام آمن ومباشر لتجنب أي مشاكل في الفهارس
+        cur.execute("SELECT id, full_name, email, balance, is_blocked FROM users ORDER BY id DESC;")
+        users_rows = cur.fetchall()
+        
+        users = []
+        for r in users_rows:
+            user_id = r[0]
+            # حساب عدد الإيداعات المقبولة لكل مستخدم بشكل منفصل وآمن
+            cur.execute("SELECT COUNT(*) FROM orders WHERE user_id = %s AND payment_status = 'approved';", (user_id,))
+            dep_count = cur.fetchone()[0]
+            
+            users.append({
+                "id": user_id,
+                "full_name": r[1],
+                "email": r[2],
+                "balance": r[3],
+                "is_blocked": r[4],
+                "total_deposits": dep_count
+            })
+            
         cur.close()
         conn.close()
-        users = [{
-            "id": r[0], 
-            "full_name": r[1], 
-            "email": r[2], 
-            "balance": r[3], 
-            "is_blocked": r[4],
-            "total_deposits": r[5]
-        } for r in rows]
         return {"status": "success", "users": users}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
