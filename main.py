@@ -129,6 +129,11 @@ class BlockUserRequest(BaseModel):
     user_id: int
     admin_secret: str
 
+class UpdateBalanceRequest(BaseModel):
+    user_id: int
+    new_balance: float
+    admin_secret: str
+
 @app.post("/signup")
 def signup_user(user: SignupRequest):
     email_regex = r"^[\w\.-]+@[\w\.-]+\.\w+$"
@@ -353,11 +358,23 @@ def get_all_users(admin_secret: str):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id, full_name, email, balance, is_blocked FROM users ORDER BY id DESC;")
+        cur.execute("""
+            SELECT u.id, u.full_name, u.email, u.balance, u.is_blocked,
+                   (SELECT COUNT(*) FROM orders o WHERE o.user_id = u.id AND o.payment_status = 'approved' AND o.order_status = 'deposit_approved') as total_deposits
+            FROM users u 
+            ORDER BY u.id DESC;
+        """)
         rows = cur.fetchall()
         cur.close()
         conn.close()
-        users = [{"id": r[0], "full_name": r[1], "email": r[2], "balance": r[3], "is_blocked": r[4]} for r in rows]
+        users = [{
+            "id": r[0], 
+            "full_name": r[1], 
+            "email": r[2], 
+            "balance": r[3], 
+            "is_blocked": r[4],
+            "total_deposits": r[5]
+        } for r in rows]
         return {"status": "success", "users": users}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -378,6 +395,26 @@ def block_user(req: BlockUserRequest):
         conn.close()
         status_text = "blocked" if row[0] else "unblocked"
         return {"status": "success", "message": f"User {row[1]} has been {status_text} successfully!"}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/update-user-balance")
+def update_user_balance(req: UpdateBalanceRequest):
+    if req.admin_secret != "Dh92880":
+        raise HTTPException(status_code=403, detail="Incorrect secret key!")
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET balance = %s WHERE id = %s RETURNING full_name;", (req.new_balance, req.user_id))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found!")
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"status": "success", "message": f"Balance updated successfully for {row[1]}!"}
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -508,7 +545,6 @@ def get_all_accounts():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        # جلب الحسابات غير المباعة فقط لكي تختفي تلقائياً عند بيعها
         cur.execute("SELECT id, product_id, account_data, is_sold FROM product_items WHERE is_sold = FALSE ORDER BY id DESC;")
         rows = cur.fetchall()
         cur.close()
