@@ -359,7 +359,20 @@ def get_users_list(admin_secret: str):
         conn = get_db_connection()
         cur = conn.cursor()
         
-        cur.execute("SELECT id, full_name, email, balance, is_blocked FROM users ORDER BY id DESC;")
+        # استعلام محسّن لجلب المستخدمين مع مجموع إيداعاتهم المقبولة
+        cur.execute("""
+            SELECT 
+                u.id, 
+                u.full_name, 
+                u.email, 
+                u.balance, 
+                u.is_blocked,
+                COALESCE(SUM(o.total_amount), 0.0) AS total_deposits
+            FROM users u
+            LEFT JOIN orders o ON u.id = o.user_id AND o.order_status = 'deposit_approved'
+            GROUP BY u.id, u.full_name, u.email, u.balance, u.is_blocked
+            ORDER BY u.id DESC;
+        """)
         rows = cur.fetchall()
         
         users = []
@@ -370,7 +383,7 @@ def get_users_list(admin_secret: str):
                 "email": str(r[2]),
                 "balance": float(r[3]) if r[3] is not None else 0.0,
                 "is_blocked": bool(r[4]) if r[4] is not None else False,
-                "total_deposits": 0
+                "total_deposits": float(r[5]) if r[5] is not None else 0.0
             })
             
         cur.close()
