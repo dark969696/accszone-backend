@@ -359,18 +359,18 @@ def get_all_users(admin_secret: str):
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # بنجيب البيانات الأساسية فقط عمود بعمود لتجنب أي تداخل في الفهارس
         cur.execute("SELECT id, full_name, email, balance, is_blocked FROM users ORDER BY id DESC;")
         rows = cur.fetchall()
         
         users = []
         for r in rows:
             u_id = r[0]
-            # حساب عدد الإيداعات بعملية منفصلة 100% آمنة
+            dep_count = 0
             try:
                 cur.execute("SELECT COUNT(*) FROM orders WHERE user_id = %s;", (u_id,))
-                dep_row = cur.fetchone()
-                dep_count = dep_row[0] if dep_row else 0
+                res = cur.fetchone()
+                if res and len(res) > 0:
+                    dep_count = res[0]
             except Exception:
                 dep_count = 0
 
@@ -378,9 +378,9 @@ def get_all_users(admin_secret: str):
                 "id": u_id,
                 "full_name": r[1] if len(r) > 1 else "Unknown",
                 "email": r[2] if len(r) > 2 else "",
-                "balance": r[3] if len(r) > 3 else 0.0,
-                "is_blocked": r[4] if len(r) > 4 else False,
-                "total_deposits": dep_count
+                "balance": float(r[3]) if len(r) > 3 and r[3] is not None else 0.0,
+                "is_blocked": bool(r[4]) if len(r) > 4 and r[4] is not None else False,
+                "total_deposits": int(dep_count)
             })
             
         cur.close()
