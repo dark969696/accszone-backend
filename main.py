@@ -351,8 +351,8 @@ def get_all_purchases(admin_secret: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/get-all-users")
-def get_all_users(admin_secret: str):
+@app.get("/get-users-list")
+def get_users_list(admin_secret: str):
     if admin_secret != "Dh92880":
         raise HTTPException(status_code=403, detail="Incorrect secret key!")
     try:
@@ -365,11 +365,11 @@ def get_all_users(admin_secret: str):
         users = []
         for r in rows:
             users.append({
-                "id": r[0],
-                "full_name": r[1],
-                "email": r[2],
-                "balance": r[3] if r[3] is not None else 0.0,
-                "is_blocked": r[4] if r[4] is not None else False,
+                "id": int(r[0]),
+                "full_name": str(r[1]),
+                "email": str(r[2]),
+                "balance": float(r[3]) if r[3] is not None else 0.0,
+                "is_blocked": bool(r[4]) if r[4] is not None else False,
                 "total_deposits": 0
             })
             
@@ -377,7 +377,7 @@ def get_all_users(admin_secret: str):
         conn.close()
         return {"status": "success", "users": users}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"status": "error", "users": [], "detail": str(e)}
 
 @app.post("/block-user")
 def block_user(req: BlockUserRequest):
