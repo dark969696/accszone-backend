@@ -172,7 +172,7 @@ def login_user(user: LoginRequest):
         conn.close()
         if not db_user:
             raise HTTPException(status_code=400, detail="Invalid email or password!")
-        if db_user[4]: # لو الحساب محظور
+        if db_user[4]:
             raise HTTPException(status_code=403, detail="Your account has been blocked by administration!")
         return {"status": "success", "message": "Logged in successfully!", "user": {"id": db_user[0], "full_name": db_user[1], "email": db_user[2], "balance": db_user[3]}}
     except HTTPException as he:
@@ -481,11 +481,23 @@ def add_account(item: AddAccountRequest):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("INSERT INTO product_items (product_id, account_data, is_sold) VALUES (%s, %s, FALSE);", (item.product_id, item.account_data))
+        
+        lines = item.account_data.strip().split("\n")
+        added_count = 0
+        
+        for line in lines:
+            clean_line = line.strip()
+            if clean_line:
+                cur.execute(
+                    "INSERT INTO product_items (product_id, account_data, is_sold) VALUES (%s, %s, FALSE);",
+                    (item.product_id, clean_line)
+                )
+                added_count += 1
+                
         conn.commit()
         cur.close()
         conn.close()
-        return {"status": "success", "message": "Account added to inventory successfully!"}
+        return {"status": "success", "message": f"Successfully added {added_count} account(s) to inventory!"}
     except HTTPException as he:
         raise he
     except Exception as e:
