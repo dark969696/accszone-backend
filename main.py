@@ -127,16 +127,16 @@ class UpdatePriceRequest(BaseModel):
 def signup_user(user: SignupRequest):
     email_regex = r"^[\w\.-]+@[\w\.-]+\.\w+$"
     if not re.match(email_regex, user.email):
-        raise HTTPException(status_code=400, detail="صيغة البريد الإلكتروني غير صحيحة!")
+        raise HTTPException(status_code=400, detail="Invalid email format!")
     if len(user.password) < 8:
-        raise HTTPException(status_code=400, detail="كلمة المرور يجب ألا تقل عن 8 خانات!")
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters long!")
         
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("SELECT id FROM users WHERE email = %s;", (user.email,))
         if cur.fetchone():
-            raise HTTPException(status_code=400, detail="البريد الإلكتروني مستخدم بالفعل!")
+            raise HTTPException(status_code=400, detail="Email is already registered!")
             
         cur.execute(
             "INSERT INTO users (full_name, email, password, balance) VALUES (%s, %s, %s, 0.0) RETURNING id, balance;",
@@ -146,7 +146,7 @@ def signup_user(user: SignupRequest):
         conn.commit()
         cur.close()
         conn.close()
-        return {"status": "success", "message": "تم إنشاء الحساب بنجاح!", "user": {"id": row[0], "full_name": user.full_name, "email": user.email, "balance": row[1]}}
+        return {"status": "success", "message": "Account created successfully!", "user": {"id": row[0], "full_name": user.full_name, "email": user.email, "balance": row[1]}}
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -162,8 +162,8 @@ def login_user(user: LoginRequest):
         cur.close()
         conn.close()
         if not db_user:
-            raise HTTPException(status_code=400, detail="البريد الإلكتروني أو كلمة المرور غير صحيحة!")
-        return {"status": "success", "message": "تم تسجيل الدخول بنجاح!", "user": {"id": db_user[0], "full_name": db_user[1], "email": db_user[2], "balance": db_user[3]}}
+            raise HTTPException(status_code=400, detail="Invalid email or password!")
+        return {"status": "success", "message": "Logged in successfully!", "user": {"id": db_user[0], "full_name": db_user[1], "email": db_user[2], "balance": db_user[3]}}
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -179,7 +179,7 @@ def get_user_balance(req: BalanceCheckRequest):
         cur.close()
         conn.close()
         if not row:
-            raise HTTPException(status_code=404, detail="المستخدم غير موجود!")
+            raise HTTPException(status_code=404, detail="User not found!")
         return {"status": "success", "balance": row[0]}
     except HTTPException as he:
         raise he
@@ -248,7 +248,7 @@ def deposit_balance(req: DepositRequest):
         cur = conn.cursor()
         cur.execute("SELECT id FROM orders WHERE txid = %s;", (req.txid,))
         if cur.fetchone():
-            raise HTTPException(status_code=400, detail="رقم المعاملة (TXID) مستخدم من قبل!")
+            raise HTTPException(status_code=400, detail="Transaction ID (TXID) has already been used!")
 
         cur.execute("""
             INSERT INTO orders (user_id, total_amount, txid, payment_status, order_status) 
@@ -258,7 +258,7 @@ def deposit_balance(req: DepositRequest):
         conn.commit()
         cur.close()
         conn.close()
-        return {"status": "success", "message": "تم إرسال طلب الشحن بنجاح وهو قيد المراجعة من الإدارة!"}
+        return {"status": "success", "message": "Deposit request submitted successfully and is pending review!"}
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -267,7 +267,7 @@ def deposit_balance(req: DepositRequest):
 @app.get("/get-pending-deposits")
 def get_pending_deposits(admin_secret: str):
     if admin_secret != "Dh92880":
-        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
+        raise HTTPException(status_code=403, detail="Incorrect secret key!")
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -289,7 +289,7 @@ def get_pending_deposits(admin_secret: str):
 @app.get("/get-all-purchases")
 def get_all_purchases(admin_secret: str):
     if admin_secret != "Dh92880":
-        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
+        raise HTTPException(status_code=403, detail="Incorrect secret key!")
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -317,25 +317,25 @@ def get_all_purchases(admin_secret: str):
 @app.post("/approve-deposit")
 def approve_deposit(req: ApproveDepositRequest):
     if req.admin_secret != "Dh92880":
-        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
+        raise HTTPException(status_code=403, detail="Incorrect secret key!")
     try:
         conn = get_db_connection()
         cur = conn.cursor()
         cur.execute("SELECT user_id, total_amount, payment_status FROM orders WHERE id = %s;", (req.order_id,))
         order = cur.fetchone()
         if not order:
-            raise HTTPException(status_code=404, detail="الطلب غير موجود!")
+            raise HTTPException(status_code=404, detail="Order not found!")
         
         user_id, amount, payment_status = order[0], order[1], order[2]
         if payment_status == 'approved':
-            raise HTTPException(status_code=400, detail="تم اعتماد هذا الطلب مسبقاً!")
+            raise HTTPException(status_code=400, detail="This order has already been approved!")
 
         cur.execute("UPDATE orders SET payment_status = 'approved', order_status = 'deposit_approved' WHERE id = %s;", (req.order_id,))
         cur.execute("UPDATE users SET balance = balance + %s WHERE id = %s RETURNING balance;", (amount, user_id))
         conn.commit()
         cur.close()
         conn.close()
-        return {"status": "success", "message": f"تم اعتماد الإيداع بنجاح وإضافة ${amount} لحساب المستخدم!"}
+        return {"status": "success", "message": f"Deposit approved successfully and ${amount} credited to user balance!"}
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -350,17 +350,17 @@ def buy_with_balance(order: BalanceOrderRequest):
         cur.execute("SELECT balance FROM users WHERE id = %s;", (order.user_id,))
         user_row = cur.fetchone()
         if not user_row:
-            raise HTTPException(status_code=404, detail="المستخدم غير موجود!")
+            raise HTTPException(status_code=404, detail="User not found!")
         
         current_balance = user_row[0]
         if current_balance < order.amount:
-            raise HTTPException(status_code=400, detail="رصيدك غير كافي! يرجى شحن المحفظة أولاً.")
+            raise HTTPException(status_code=400, detail="Insufficient balance! Please top up your wallet first.")
 
         cur.execute("SELECT id, account_data FROM product_items WHERE product_id = %s AND is_sold = FALSE LIMIT %s;", (order.product_id, order.quantity))
         items = cur.fetchall()
         
         if len(items) < order.quantity:
-            raise HTTPException(status_code=400, detail=f"عذراً، المخزون المتاح حالياً ({len(items)}) لا يكفي الكمية المطلوبة ({order.quantity})!")
+            raise HTTPException(status_code=400, detail=f"Sorry, current available stock ({len(items)}) is less than requested quantity ({order.quantity})!")
 
         item_ids = [item[0] for item in items]
         accounts_data_list = [item[1] for item in items]
@@ -383,7 +383,7 @@ def buy_with_balance(order: BalanceOrderRequest):
             "status": "success",
             "order_id": order_id,
             "account_details": combined_accounts,
-            "message": "تم الشراء بنجاح من رصيد المحفظة وتسليم الحسابات!"
+            "message": "Purchase completed successfully from wallet balance and accounts delivered!"
         }
     except HTTPException as he:
         raise he
@@ -406,7 +406,7 @@ def check_stock(product_id: int):
 @app.post("/add-account")
 def add_account(item: AddAccountRequest):
     if item.admin_secret != "Dh92880":
-        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
+        raise HTTPException(status_code=403, detail="Incorrect secret key!")
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -414,7 +414,7 @@ def add_account(item: AddAccountRequest):
         conn.commit()
         cur.close()
         conn.close()
-        return {"status": "success", "message": "تم إضافة الحساب بنجاح للمخزون!"}
+        return {"status": "success", "message": "Account added to inventory successfully!"}
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -437,7 +437,7 @@ def get_all_accounts():
 @app.post("/delete-account")
 def delete_account(item: DeleteAccountRequest):
     if item.admin_secret != "Dh92880":
-        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
+        raise HTTPException(status_code=403, detail="Incorrect secret key!")
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -445,7 +445,7 @@ def delete_account(item: DeleteAccountRequest):
         conn.commit()
         cur.close()
         conn.close()
-        return {"status": "success", "message": "تم حذف الحساب بنجاح!"}
+        return {"status": "success", "message": "Account deleted successfully!"}
     except HTTPException as he:
         raise he
     except Exception as e:
@@ -454,7 +454,7 @@ def delete_account(item: DeleteAccountRequest):
 @app.post("/update-product-price")
 def update_product_price(req: UpdatePriceRequest):
     if req.admin_secret != "Dh92880":
-        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
+        raise HTTPException(status_code=403, detail="Incorrect secret key!")
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -466,7 +466,7 @@ def update_product_price(req: UpdatePriceRequest):
         conn.commit()
         cur.close()
         conn.close()
-        return {"status": "success", "message": "تم تحديث السعر بنجاح!"}
+        return {"status": "success", "message": "Price updated successfully!"}
     except HTTPException as he:
         raise he
     except Exception as e:
