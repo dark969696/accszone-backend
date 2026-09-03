@@ -359,7 +359,6 @@ def get_all_users(admin_secret: str):
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # استعلام أساسي وآمن تماماً من جدول users فقط
         cur.execute("SELECT id, full_name, email, balance, is_blocked FROM users ORDER BY id DESC;")
         rows = cur.fetchall()
         
@@ -371,7 +370,7 @@ def get_all_users(admin_secret: str):
                 "email": r[2],
                 "balance": r[3] if r[3] is not None else 0.0,
                 "is_blocked": r[4] if r[4] is not None else False,
-                "total_deposits": 0  # مؤقتاً لتجنب أي خطأ في الفهارس
+                "total_deposits": 0
             })
             
         cur.close()
@@ -594,7 +593,7 @@ def update_product_price(req: UpdatePriceRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/get-product-price/{product_id}")
-def get_product_price(product_id: int):
+2def get_product_price(product_id: int):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
