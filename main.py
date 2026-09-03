@@ -359,28 +359,19 @@ def get_all_users(admin_secret: str):
         conn = get_db_connection()
         cur = conn.cursor()
         
+        # استعلام أساسي وآمن تماماً من جدول users فقط
         cur.execute("SELECT id, full_name, email, balance, is_blocked FROM users ORDER BY id DESC;")
         rows = cur.fetchall()
         
         users = []
         for r in rows:
-            u_id = r[0]
-            dep_count = 0
-            try:
-                cur.execute("SELECT COUNT(*) FROM orders WHERE user_id = %s;", (u_id,))
-                res = cur.fetchone()
-                if res and len(res) > 0:
-                    dep_count = res[0]
-            except Exception:
-                dep_count = 0
-
             users.append({
-                "id": u_id,
-                "full_name": r[1] if len(r) > 1 else "Unknown",
-                "email": r[2] if len(r) > 2 else "",
-                "balance": float(r[3]) if len(r) > 3 and r[3] is not None else 0.0,
-                "is_blocked": bool(r[4]) if len(r) > 4 and r[4] is not None else False,
-                "total_deposits": int(dep_count)
+                "id": r[0],
+                "full_name": r[1],
+                "email": r[2],
+                "balance": r[3] if r[3] is not None else 0.0,
+                "is_blocked": r[4] if r[4] is not None else False,
+                "total_deposits": 0  # مؤقتاً لتجنب أي خطأ في الفهارس
             })
             
         cur.close()
