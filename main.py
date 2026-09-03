@@ -62,7 +62,6 @@ def init_db():
     except Exception:
         conn.rollback()
 
-    # إدخال منتج افتراضي (رقم 1) لو مش موجود
     cur.execute("SELECT COUNT(*) FROM products;")
     if cur.fetchone()[0] == 0:
         cur.execute("INSERT INTO products (id, name, price) VALUES (1, 'Grindr Account', 2.50);")
@@ -113,9 +112,11 @@ class ApproveDepositRequest(BaseModel):
 class AddAccountRequest(BaseModel):
     product_id: int
     account_data: str
+    admin_secret: str
 
 class DeleteAccountRequest(BaseModel):
     account_id: int
+    admin_secret: str
 
 class UpdatePriceRequest(BaseModel):
     product_id: int
@@ -404,6 +405,8 @@ def check_stock(product_id: int):
 
 @app.post("/add-account")
 def add_account(item: AddAccountRequest):
+    if item.admin_secret != "Dh92880@#&":
+        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -412,6 +415,8 @@ def add_account(item: AddAccountRequest):
         cur.close()
         conn.close()
         return {"status": "success", "message": "تم إضافة الحساب بنجاح للمخزون!"}
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -431,6 +436,8 @@ def get_all_accounts():
 
 @app.post("/delete-account")
 def delete_account(item: DeleteAccountRequest):
+    if item.admin_secret != "Dh92880@#&":
+        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
     try:
         conn = get_db_connection()
         cur = conn.cursor()
@@ -439,6 +446,8 @@ def delete_account(item: DeleteAccountRequest):
         cur.close()
         conn.close()
         return {"status": "success", "message": "تم حذف الحساب بنجاح!"}
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -458,6 +467,8 @@ def update_product_price(req: UpdatePriceRequest):
         cur.close()
         conn.close()
         return {"status": "success", "message": "تم تحديث السعر بنجاح!"}
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -471,7 +482,7 @@ def get_product_price(product_id: int):
         cur.close()
         conn.close()
         if not row:
-            return {"status": "success", "price": 2.50}  # السعر الافتراضي
+            return {"status": "success", "price": 2.50}
         return {"status": "success", "price": row[0]}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
