@@ -49,12 +49,14 @@ def init_db():
             full_name VARCHAR(100) NOT NULL,
             email VARCHAR(150) UNIQUE NOT NULL,
             password VARCHAR(255) NOT NULL,
-            balance FLOAT DEFAULT 0.0
+            balance FLOAT DEFAULT 0.0,
+            is_blocked BOOLEAN DEFAULT FALSE
         );
     """)
     
     try:
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS balance FLOAT DEFAULT 0.0;")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE;")
         cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS txid VARCHAR(255);")
         cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS account_details TEXT;")
         cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_status VARCHAR(50) DEFAULT 'deposit_request';")
@@ -123,6 +125,10 @@ class UpdatePriceRequest(BaseModel):
     new_price: float
     admin_secret: str
 
+class BlockUserRequest(BaseModel):
+    user_id: int
+    admin_secret: str
+
 @app.post("/signup")
 def signup_user(user: SignupRequest):
     email_regex = r"^[\w\.-]+@[\w\.-]+\.\w+$"
@@ -134,12 +140,15 @@ def signup_user(user: SignupRequest):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id FROM users WHERE email = %s;", (user.email,))
-        if cur.fetchone():
+        cur.execute("SELECT id, is_blocked FROM users WHERE email = %s;", (user.email,))
+        existing = cur.fetchone()
+        if existing:
+            if existing[1]:
+                raise HTTPException(status_code=403, detail="This account has been blocked!")
             raise HTTPException(status_code=400, detail="Email is already registered!")
             
         cur.execute(
-            "INSERT INTO users (full_name, email, password, balance) VALUES (%s, %s, %s, 0.0) RETURNING id, balance;",
+            "INSERT INTO users (full_name, email, password, balance, is_blocked) VALUES (%s, %s, %s, 0.0, FALSE) RETURNING id, balance;",
             (user.full_name, user.email, user.password)
         )
         row = cur.fetchone()
@@ -157,12 +166,14 @@ def login_user(user: LoginRequest):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id, full_name, email, balance FROM users WHERE email = %s AND password = %s;", (user.email, user.password))
+        cur.execute("SELECT id, full_name, email, balance, is_blocked FROM users WHERE email = %s AND password = %s;", (user.email, user.password))
         db_user = cur.fetchone()
         cur.close()
         conn.close()
         if not db_user:
             raise HTTPException(status_code=400, detail="Invalid email or password!")
+        if db_user[4]: # لو الحساب محظور
+            raise HTTPException(status_code=403, detail="Your account has been blocked by administration!")
         return {"status": "success", "message": "Logged in successfully!", "user": {"id": db_user[0], "full_name": db_user[1], "email": db_user[2], "balance": db_user[3]}}
     except HTTPException as he:
         raise he
@@ -174,12 +185,14 @@ def get_user_balance(req: BalanceCheckRequest):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT balance FROM users WHERE id = %s;", (req.user_id,))
+        cur.execute("SELECT balance, is_blocked FROM users WHERE id = %s;", (req.user_id,))
         row = cur.fetchone()
         cur.close()
         conn.close()
         if not row:
             raise HTTPException(status_code=404, detail="User not found!")
+        if row[1]:
+            raise HTTPException(status_code=403, detail="Your account is blocked!")
         return {"status": "success", "balance": row[0]}
     except HTTPException as he:
         raise he
@@ -191,6 +204,11 @@ def get_user_orders(req: BalanceCheckRequest):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
+        cur.execute("SELECT is_blocked FROM users WHERE id = %s;", (req.user_id,))
+        u_row = cur.fetchone()
+        if u_row and u_row[0]:
+            raise HTTPException(status_code=403, detail="Your account is blocked!")
+
         cur.execute("""
             SELECT id, total_amount, txid, payment_status, order_status, account_details 
             FROM orders 
@@ -211,6 +229,8 @@ def get_user_orders(req: BalanceCheckRequest):
         } for r in rows]
 
         return {"status": "success", "orders": orders}
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -219,6 +239,11 @@ def get_user_deposits(req: BalanceCheckRequest):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
+        cur.execute("SELECT is_blocked FROM users WHERE id = %s;", (req.user_id,))
+        u_row = cur.fetchone()
+        if u_row and u_row[0]:
+            raise HTTPException(status_code=403, detail="Your account is blocked!")
+
         cur.execute("""
             SELECT id, total_amount, txid, payment_status, order_status 
             FROM orders 
@@ -238,6 +263,8 @@ def get_user_deposits(req: BalanceCheckRequest):
         } for r in rows]
 
         return {"status": "success", "deposits": deposits}
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -246,6 +273,11 @@ def deposit_balance(req: DepositRequest):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
+        cur.execute("SELECT is_blocked FROM users WHERE id = %s;", (req.user_id,))
+        u_row = cur.fetchone()
+        if u_row and u_row[0]:
+            raise HTTPException(status_code=403, detail="Your account is blocked!")
+
         cur.execute("SELECT id FROM orders WHERE txid = %s;", (req.txid,))
         if cur.fetchone():
             raise HTTPException(status_code=400, detail="Transaction ID (TXID) has already been used!")
@@ -275,7 +307,7 @@ def get_pending_deposits(admin_secret: str):
             SELECT orders.id, users.id, users.full_name, users.email, orders.total_amount, orders.txid 
             FROM orders 
             JOIN users ON orders.user_id = users.id 
-            WHERE orders.payment_status = 'pending' AND orders.order_status = 'deposit_request'
+            WHERE orders.payment_status = 'pending' AND orders.order_status = 'deposit_request' AND users.is_blocked = FALSE
             ORDER BY orders.id DESC;
         """)
         rows = cur.fetchall()
@@ -321,12 +353,33 @@ def get_all_users(admin_secret: str):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id, full_name, email, balance FROM users ORDER BY id DESC;")
+        cur.execute("SELECT id, full_name, email, balance, is_blocked FROM users ORDER BY id DESC;")
         rows = cur.fetchall()
         cur.close()
         conn.close()
-        users = [{"id": r[0], "full_name": r[1], "email": r[2], "balance": r[3]} for r in rows]
+        users = [{"id": r[0], "full_name": r[1], "email": r[2], "balance": r[3], "is_blocked": r[4]} for r in rows]
         return {"status": "success", "users": users}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/block-user")
+def block_user(req: BlockUserRequest):
+    if req.admin_secret != "Dh92880":
+        raise HTTPException(status_code=403, detail="Incorrect secret key!")
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE users SET is_blocked = NOT is_blocked WHERE id = %s RETURNING is_blocked, full_name;", (req.user_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="User not found!")
+        conn.commit()
+        cur.close()
+        conn.close()
+        status_text = "blocked" if row[0] else "unblocked"
+        return {"status": "success", "message": f"User {row[1]} has been {status_text} successfully!"}
+    except HTTPException as he:
+        raise he
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -363,10 +416,12 @@ def buy_with_balance(order: BalanceOrderRequest):
         conn = get_db_connection()
         cur = conn.cursor()
 
-        cur.execute("SELECT balance FROM users WHERE id = %s;", (order.user_id,))
+        cur.execute("SELECT balance, is_blocked FROM users WHERE id = %s;", (order.user_id,))
         user_row = cur.fetchone()
         if not user_row:
             raise HTTPException(status_code=404, detail="User not found!")
+        if user_row[1]:
+            raise HTTPException(status_code=403, detail="Your account has been blocked!")
         
         current_balance = user_row[0]
         if current_balance < order.amount:
