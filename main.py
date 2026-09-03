@@ -508,7 +508,8 @@ def get_all_accounts():
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("SELECT id, product_id, account_data, is_sold FROM product_items ORDER BY id DESC;")
+        # جلب الحسابات غير المباعة فقط لكي تختفي تلقائياً عند بيعها
+        cur.execute("SELECT id, product_id, account_data, is_sold FROM product_items WHERE is_sold = FALSE ORDER BY id DESC;")
         rows = cur.fetchall()
         cur.close()
         conn.close()
