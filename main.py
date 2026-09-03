@@ -81,7 +81,7 @@ def startup_event():
 
 @app.get("/")
 def read_root():
-    return {"message": "AccsZone Backend is running smoothly!"}
+    return {"message": "DigiZone Backend is running smoothly!"}
 
 class SignupRequest(BaseModel):
     full_name: str
