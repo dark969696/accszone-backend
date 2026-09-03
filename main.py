@@ -314,6 +314,22 @@ def get_all_purchases(admin_secret: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/get-all-users")
+def get_all_users(admin_secret: str):
+    if admin_secret != "Dh92880":
+        raise HTTPException(status_code=403, detail="Incorrect secret key!")
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, full_name, email, balance FROM users ORDER BY id DESC;")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        users = [{"id": r[0], "full_name": r[1], "email": r[2], "balance": r[3]} for r in rows]
+        return {"status": "success", "users": users}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/approve-deposit")
 def approve_deposit(req: ApproveDepositRequest):
     if req.admin_secret != "Dh92880":
