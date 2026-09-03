@@ -593,7 +593,7 @@ def update_product_price(req: UpdatePriceRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/get-product-price/{product_id}")
-2def get_product_price(product_id: int):
+def get_product_price(product_id: int):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
