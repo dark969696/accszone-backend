@@ -359,14 +359,14 @@ def get_all_users(admin_secret: str):
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # استعلام آمن ومباشر لتجنب أي مشاكل في الفهارس
+        # استعلام آمن ومباشر لمنع أي خطأ في الفهارس
         cur.execute("SELECT id, full_name, email, balance, is_blocked FROM users ORDER BY id DESC;")
         users_rows = cur.fetchall()
         
         users = []
         for r in users_rows:
             user_id = r[0]
-            # حساب عدد الإيداعات المقبولة لكل مستخدم بشكل منفصل وآمن
+            # حساب عدد الإيداعات المقبولة بشكل منفصل لكل مستخدم
             cur.execute("SELECT COUNT(*) FROM orders WHERE user_id = %s AND payment_status = 'approved';", (user_id,))
             dep_count = cur.fetchone()[0]
             
