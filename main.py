@@ -1,393 +1,481 @@
-<!DOCTYPE html>
-<html lang="en" dir="ltr">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DigiZone - Secure Master Admin Dashboard</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-</head>
-<body class="bg-slate-950 text-slate-100 font-sans min-h-screen p-4 sm:p-6 flex items-center justify-center">
+import os
+import re
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import psycopg2
+  
+app = FastAPI()
 
-    <!-- شاشة تسجيل دخول الأدمن السرية -->
-    <div id="authOverlay" class="max-w-md w-full bg-slate-900 border border-slate-800 p-8 rounded-2xl shadow-2xl text-center">
-        <div class="mb-6">
-            <div class="w-12 h-12 bg-blue-600/20 text-blue-500 rounded-2xl flex items-center justify-center mx-auto mb-3 text-xl">
-                <i class="fa-solid fa-shield-halved"></i>
-            </div>
-            <h2 class="text-xl font-bold text-white">Admin Authentication</h2>
-            <p class="text-xs text-slate-400 mt-1">Enter your admin secret key to access control panel.</p>
-        </div>
-        <form id="authForm" onsubmit="verifyAdmin(event)" class="space-y-4">
-            <input type="password" id="adminSecretInput" placeholder="Enter Admin Secret..." class="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white focus:outline-none focus:border-blue-500 text-center" required>
-            <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 rounded-xl text-sm transition shadow-lg shadow-blue-600/20">
-                Access Master Dashboard
-            </button>
-        </form>
-        <div class="mt-4">
-            <a href="index.html" class="text-xs text-slate-400 hover:text-white transition">← Return to Store</a>
-        </div>
-    </div>
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    <!-- لوحة التحكم الرئيسية الكاملة (مخفية لحين إدخال كلمة المرور) -->
-    <div id="adminPanel" class="max-w-5xl w-full space-y-6 hidden">
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL)
+
+def init_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS product_items (
+            id SERIAL PRIMARY KEY,
+            product_id INT NOT NULL,
+            account_data TEXT NOT NULL,
+            is_sold BOOLEAN DEFAULT FALSE
+        );
+        CREATE TABLE IF NOT EXISTS products (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            price FLOAT NOT NULL DEFAULT 2.50
+        );
+        CREATE TABLE IF NOT EXISTS orders (
+            id SERIAL PRIMARY KEY,
+            user_id INT NOT NULL,
+            total_amount FLOAT NOT NULL,
+            txid VARCHAR(255),
+            payment_status VARCHAR(50) DEFAULT 'pending',
+            order_status VARCHAR(50) DEFAULT 'deposit_request',
+            account_details TEXT
+        );
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            full_name VARCHAR(100) NOT NULL,
+            email VARCHAR(150) UNIQUE NOT NULL,
+            password VARCHAR(255) NOT NULL,
+            balance FLOAT DEFAULT 0.0
+        );
+    """)
+    
+    try:
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS balance FLOAT DEFAULT 0.0;")
+        cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS txid VARCHAR(255);")
+        cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS account_details TEXT;")
+        cur.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_status VARCHAR(50) DEFAULT 'deposit_request';")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    # إدخال منتج افتراضي (رقم 1) لو مش موجود
+    cur.execute("SELECT COUNT(*) FROM products;")
+    if cur.fetchone()[0] == 0:
+        cur.execute("INSERT INTO products (id, name, price) VALUES (1, 'Grindr Account', 2.50);")
+
+    cur.execute("SELECT COUNT(*) FROM product_items;")
+    if cur.fetchone()[0] == 0:
+        cur.execute("INSERT INTO product_items (product_id, account_data, is_sold) VALUES (1, 'Grindr_Account_Demo: user@test.com | Pass: 123456', FALSE);")
+    
+    conn.commit()
+    cur.close()
+    conn.close()
+
+@app.on_event("startup")
+def startup_event():
+    init_db()
+
+@app.get("/")
+def read_root():
+    return {"message": "DigiZone Backend is running smoothly!"}
+
+class SignupRequest(BaseModel):
+    full_name: str
+    email: str
+    password: str
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class DepositRequest(BaseModel):
+    user_id: int
+    amount: float
+    txid: str
+
+class BalanceOrderRequest(BaseModel):
+    user_id: int
+    product_id: int
+    amount: float
+    quantity: int
+
+class BalanceCheckRequest(BaseModel):
+    user_id: int
+
+class ApproveDepositRequest(BaseModel):
+    order_id: int
+    admin_secret: str
+
+class AddAccountRequest(BaseModel):
+    product_id: int
+    account_data: str
+
+class DeleteAccountRequest(BaseModel):
+    account_id: int
+
+class UpdatePriceRequest(BaseModel):
+    product_id: int
+    new_price: float
+    admin_secret: str
+
+@app.post("/signup")
+def signup_user(user: SignupRequest):
+    email_regex = r"^[\w\.-]+@[\w\.-]+\.\w+$"
+    if not re.match(email_regex, user.email):
+        raise HTTPException(status_code=400, detail="صيغة البريد الإلكتروني غير صحيحة!")
+    if len(user.password) < 8:
+        raise HTTPException(status_code=400, detail="كلمة المرور يجب ألا تقل عن 8 خانات!")
         
-        <!-- Top Header & Tabs Navigation -->
-        <div class="flex flex-col md:flex-row justify-between items-center bg-slate-900 p-5 rounded-2xl border border-slate-800 shadow-xl gap-4">
-            <h1 class="text-xl font-bold text-white"><i class="fa-solid fa-shield-halved text-blue-500 mr-2"></i> Master Admin Control Panel</h1>
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE email = %s;", (user.email,))
+        if cur.fetchone():
+            raise HTTPException(status_code=400, detail="البريد الإلكتروني مستخدم بالفعل!")
             
-            <div class="flex flex-wrap items-center gap-2 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
-                <button onclick="switchTab('inventory')" id="tabInvBtn" class="px-3.5 py-2 rounded-lg text-xs font-bold transition bg-blue-600 text-white shadow-lg">
-                    <i class="fa-solid fa-boxes-stacked mr-1"></i> Inventory & Prices
-                </button>
-                <button onclick="switchTab('deposits')" id="tabDepBtn" class="px-3.5 py-2 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white">
-                    <i class="fa-solid fa-wallet mr-1"></i> Deposits
-                </button>
-                <button onclick="switchTab('purchases')" id="tabPurBtn" class="px-3.5 py-2 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white">
-                    <i class="fa-solid fa-bag-shopping mr-1"></i> Purchases
-                </button>
-            </div>
+        cur.execute(
+            "INSERT INTO users (full_name, email, password, balance) VALUES (%s, %s, %s, 0.0) RETURNING id, balance;",
+            (user.full_name, user.email, user.password)
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"status": "success", "message": "تم إنشاء الحساب بنجاح!", "user": {"id": row[0], "full_name": user.full_name, "email": user.email, "balance": row[1]}}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-            <div class="flex gap-2">
-                <a href="index.html" class="text-xs bg-slate-800 text-slate-300 px-3 py-2 rounded-lg border border-slate-700 transition hover:bg-slate-700">Store</a>
-                <button onclick="logoutAdmin()" class="text-xs bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white px-3 py-2 rounded-lg border border-red-500/30 transition">Logout</button>
-            </div>
-        </div>
+@app.post("/login")
+def login_user(user: LoginRequest):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, full_name, email, balance FROM users WHERE email = %s AND password = %s;", (user.email, user.password))
+        db_user = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not db_user:
+            raise HTTPException(status_code=400, detail="البريد الإلكتروني أو كلمة المرور غير صحيحة!")
+        return {"status": "success", "message": "تم تسجيل الدخول بنجاح!", "user": {"id": db_user[0], "full_name": db_user[1], "email": db_user[2], "balance": db_user[3]}}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        <!-- TAB 1: Inventory & Prices Section -->
-        <div id="inventorySection" class="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <div class="space-y-6">
-                <!-- Add Account Form -->
-                <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-xl">
-                    <h3 class="font-bold text-sm mb-4 pb-2 border-b border-slate-800 text-slate-200">Add New Account</h3>
-                    <form id="addForm" class="space-y-4">
-                        <div>
-                            <label class="block text-xs font-medium text-slate-400 mb-1">Product ID:</label>
-                            <input type="number" id="product_id" value="1" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500" required>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-medium text-slate-400 mb-1">Account Data:</label>
-                            <textarea id="account_data" rows="3" placeholder="user@email.com | pass" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500" required></textarea>
-                        </div>
-                        <button type="submit" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-lg shadow-blue-600/20">
-                            Add to Inventory
-                        </button>
-                    </form>
-                    <p id="resultMsg" class="mt-3 text-center text-xs font-semibold"></p>
-                </div>
+@app.post("/get-user-balance")
+def get_user_balance(req: BalanceCheckRequest):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT balance FROM users WHERE id = %s;", (req.user_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not row:
+            raise HTTPException(status_code=404, detail="المستخدم غير موجود!")
+        return {"status": "success", "balance": row[0]}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-                <!-- Update Price Form -->
-                <div class="bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-xl">
-                    <h3 class="font-bold text-sm mb-4 pb-2 border-b border-slate-800 text-slate-200">Update Product Price</h3>
-                    <form id="priceForm" class="space-y-4">
-                        <div>
-                            <label class="block text-xs font-medium text-slate-400 mb-1">Product ID:</label>
-                            <input type="number" id="price_product_id" value="1" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500" required>
-                        </div>
-                        <div>
-                            <label class="block text-xs font-medium text-slate-400 mb-1">New Price ($):</label>
-                            <input type="number" step="0.01" id="new_price" placeholder="2.50" class="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500" required>
-                        </div>
-                        <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 rounded-xl text-xs transition shadow-lg shadow-emerald-600/20">
-                            Update Price
-                        </button>
-                    </form>
-                    <p id="priceMsg" class="mt-3 text-center text-xs font-semibold"></p>
-                </div>
-            </div>
+@app.post("/get-user-orders")
+def get_user_orders(req: BalanceCheckRequest):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, total_amount, txid, payment_status, order_status, account_details 
+            FROM orders 
+            WHERE user_id = %s AND order_status = 'product_purchase'
+            ORDER BY id DESC;
+        """, (req.user_id,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
 
-            <!-- Accounts Table View -->
-            <div class="md:col-span-2 bg-slate-900 border border-slate-800 p-6 rounded-2xl shadow-xl h-fit">
-                <div class="flex items-center justify-between mb-4 pb-2 border-b border-slate-800">
-                    <h3 class="font-bold text-sm text-slate-200">Current Inventory Database</h3>
-                    <button onclick="loadAccounts()" class="text-xs bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded-lg border border-slate-700 transition">Refresh List 🔄</button>
-                </div>
-                <div class="overflow-x-auto">
-                    <table class="w-full text-left text-xs">
-                        <thead>
-                            <tr class="text-slate-400 border-b border-slate-800">
-                                <th class="pb-3">ID</th>
-                                <th class="pb-3">Account Data</th>
-                                <th class="pb-3">Status</th>
-                                <th class="pb-3 text-center">Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody id="accountsTableBody" class="divide-y divide-slate-800 text-slate-300">
-                            <tr><td colspan="4" class="py-4 text-center text-slate-500">Loading...</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
+        orders = [{
+            "order_id": r[0],
+            "total_amount": r[1],
+            "txid": r[2],
+            "payment_status": r[3],
+            "order_status": r[4],
+            "account_details": r[5]
+        } for r in rows]
 
-        <!-- TAB 2: Pending Deposits Section -->
-        <div id="depositsSection" class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4 hidden">
-            <h3 class="font-bold text-base text-white flex items-center"><i class="fa-solid fa-wallet text-amber-400 mr-2"></i> Pending Deposit Requests</h3>
-            <div id="depositsList" class="space-y-3">
-                <p class="text-xs text-slate-500">Loading pending deposits...</p>
-            </div>
-        </div>
+        return {"status": "success", "orders": orders}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        <!-- TAB 3: Product Purchases Section -->
-        <div id="purchasesSection" class="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4 hidden">
-            <h3 class="font-bold text-base text-white flex items-center"><i class="fa-solid fa-bag-shopping text-emerald-400 mr-2"></i> Product Purchases History</h3>
-            <div id="purchasesList" class="space-y-3">
-                <p class="text-xs text-slate-500">Loading purchases history...</p>
-            </div>
-        </div>
+@app.post("/get-user-deposits")
+def get_user_deposits(req: BalanceCheckRequest):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, total_amount, txid, payment_status, order_status 
+            FROM orders 
+            WHERE user_id = %s AND order_status LIKE 'deposit%%'
+            ORDER BY id DESC;
+        """, (req.user_id,))
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
 
-    </div>
+        deposits = [{
+            "order_id": r[0],
+            "amount": r[1],
+            "txid": r[2],
+            "payment_status": r[3],
+            "order_status": r[4]
+        } for r in rows]
 
-    <script>
-        const API_URL = "https://digizone-kb46.onrender.com";
-        let currentAdminSecret = sessionStorage.getItem("digizone_admin_secret") || "";
+        return {"status": "success", "deposits": deposits}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        if (currentAdminSecret) {
-            validateAndOpenPanel(currentAdminSecret);
+@app.post("/deposit")
+def deposit_balance(req: DepositRequest):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM orders WHERE txid = %s;", (req.txid,))
+        if cur.fetchone():
+            raise HTTPException(status_code=400, detail="رقم المعاملة (TXID) مستخدم من قبل!")
+
+        cur.execute("""
+            INSERT INTO orders (user_id, total_amount, txid, payment_status, order_status) 
+            VALUES (%s, %s, %s, 'pending', 'deposit_request') RETURNING id;
+        """, (req.user_id, req.amount, req.txid))
+        
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"status": "success", "message": "تم إرسال طلب الشحن بنجاح وهو قيد المراجعة من الإدارة!"}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/get-pending-deposits")
+def get_pending_deposits(admin_secret: str):
+    if admin_secret != "1":
+        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT orders.id, users.id, users.full_name, users.email, orders.total_amount, orders.txid 
+            FROM orders 
+            JOIN users ON orders.user_id = users.id 
+            WHERE orders.payment_status = 'pending' AND orders.order_status = 'deposit_request'
+            ORDER BY orders.id DESC;
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        deposits = [{"order_id": r[0], "user_id": r[1], "customer_name": r[2], "customer_email": r[3], "amount": r[4], "txid": r[5]} for r in rows]
+        return {"status": "success", "deposits": deposits}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/get-all-purchases")
+def get_all_purchases(admin_secret: str):
+    if admin_secret != "1":
+        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT orders.id, users.full_name, users.email, orders.total_amount, orders.account_details 
+            FROM orders 
+            JOIN users ON orders.user_id = users.id 
+            WHERE orders.order_status = 'product_purchase'
+            ORDER BY orders.id DESC;
+        """)
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        purchases = [{
+            "order_id": r[0],
+            "customer_name": r[1],
+            "customer_email": r[2],
+            "total_amount": r[3],
+            "account_details": r[4]
+        } for r in rows]
+        return {"status": "success", "purchases": purchases}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/approve-deposit")
+def approve_deposit(req: ApproveDepositRequest):
+    if req.admin_secret != "1":
+        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT user_id, total_amount, payment_status FROM orders WHERE id = %s;", (req.order_id,))
+        order = cur.fetchone()
+        if not order:
+            raise HTTPException(status_code=404, detail="الطلب غير موجود!")
+        
+        user_id, amount, payment_status = order[0], order[1], order[2]
+        if payment_status == 'approved':
+            raise HTTPException(status_code=400, detail="تم اعتماد هذا الطلب مسبقاً!")
+
+        cur.execute("UPDATE orders SET payment_status = 'approved', order_status = 'deposit_approved' WHERE id = %s;", (req.order_id,))
+        cur.execute("UPDATE users SET balance = balance + %s WHERE id = %s RETURNING balance;", (amount, user_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"status": "success", "message": f"تم اعتماد الإيداع بنجاح وإضافة ${amount} لحساب المستخدم!"}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/buy-with-balance")
+def buy_with_balance(order: BalanceOrderRequest):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+
+        cur.execute("SELECT balance FROM users WHERE id = %s;", (order.user_id,))
+        user_row = cur.fetchone()
+        if not user_row:
+            raise HTTPException(status_code=404, detail="المستخدم غير موجود!")
+        
+        current_balance = user_row[0]
+        if current_balance < order.amount:
+            raise HTTPException(status_code=400, detail="رصيدك غير كافي! يرجى شحن المحفظة أولاً.")
+
+        cur.execute("SELECT id, account_data FROM product_items WHERE product_id = %s AND is_sold = FALSE LIMIT %s;", (order.product_id, order.quantity))
+        items = cur.fetchall()
+        
+        if len(items) < order.quantity:
+            raise HTTPException(status_code=400, detail=f"عذراً، المخزون المتاح حالياً ({len(items)}) لا يكفي الكمية المطلوبة ({order.quantity})!")
+
+        item_ids = [item[0] for item in items]
+        accounts_data_list = [item[1] for item in items]
+        combined_accounts = "\n---\n".join(accounts_data_list)
+
+        cur.execute("UPDATE users SET balance = balance - %s WHERE id = %s;", (order.amount, order.user_id))
+        cur.execute("UPDATE product_items SET is_sold = TRUE WHERE id = ANY(%s);", (item_ids,))
+
+        cur.execute("""
+            INSERT INTO orders (user_id, total_amount, txid, payment_status, order_status, account_details) 
+            VALUES (%s, %s, 'BALANCE_PAYMENT', 'paid', 'product_purchase', %s) RETURNING id;
+        """, (order.user_id, order.amount, combined_accounts))
+        
+        order_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        return {
+            "status": "success",
+            "order_id": order_id,
+            "account_details": combined_accounts,
+            "message": "تم الشراء بنجاح من رصيد المحفظة وتسليم الحسابات!"
         }
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        async function verifyAdmin(e) {
-            e.preventDefault();
-            let secret = document.getElementById('adminSecretInput').value;
-            validateAndOpenPanel(secret);
-        }
+@app.get("/check-stock/{product_id}")
+def check_stock(product_id: int):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM product_items WHERE product_id = %s AND is_sold = FALSE;", (product_id,))
+        count = cur.fetchone()[0]
+        cur.close()
+        conn.close()
+        return {"status": "success", "available_stock": count}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        async function validateAndOpenPanel(secret) {
-            try {
-                let res = await fetch(`${API_URL}/get-pending-deposits?admin_secret=${secret}`);
-                if (res.ok) {
-                    currentAdminSecret = secret;
-                    sessionStorage.setItem("digizone_admin_secret", secret);
-                    document.getElementById('authOverlay').classList.add('hidden');
-                    document.getElementById('adminPanel').classList.remove('hidden');
-                    loadAccounts();
-                } else {
-                    alert("❌ كلمة السر غير صحيحة!");
-                    sessionStorage.removeItem("digizone_admin_secret");
-                }
-            } catch (err) {
-                alert("❌ خطأ في الاتصال بالخادم!");
-            }
-        }
+@app.post("/add-account")
+def add_account(item: AddAccountRequest):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("INSERT INTO product_items (product_id, account_data, is_sold) VALUES (%s, %s, FALSE);", (item.product_id, item.account_data))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"status": "success", "message": "تم إضافة الحساب بنجاح للمخزون!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        function logoutAdmin() {
-            sessionStorage.removeItem("digizone_admin_secret");
-            location.reload();
-        }
+@app.get("/get-all-accounts")
+def get_all_accounts():
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id, product_id, account_data, is_sold FROM product_items ORDER BY id DESC;")
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        accounts = [{"id": r[0], "product_id": r[1], "account_data": r[2], "is_sold": r[3]} for r in rows]
+        return {"status": "success", "accounts": accounts}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-        function switchTab(tabName) {
-            let invSec = document.getElementById('inventorySection');
-            let depSec = document.getElementById('depositsSection');
-            let purSec = document.getElementById('purchasesSection');
-            
-            let invBtn = document.getElementById('tabInvBtn');
-            let depBtn = document.getElementById('tabDepBtn');
-            let purBtn = document.getElementById('tabPurBtn');
+@app.post("/delete-account")
+def delete_account(item: DeleteAccountRequest):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM product_items WHERE id = %s;", (item.account_id,))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"status": "success", "message": "تم حذف الحساب بنجاح!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-            invSec.classList.add('hidden');
-            depSec.classList.add('hidden');
-            purSec.classList.add('hidden');
+@app.post("/update-product-price")
+def update_product_price(req: UpdatePriceRequest):
+    if req.admin_secret != "1":
+        raise HTTPException(status_code=403, detail="كلمة السر غير صحيحة!")
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM products WHERE id = %s;", (req.product_id,))
+        if not cur.fetchone():
+            cur.execute("INSERT INTO products (id, name, price) VALUES (%s, %s, %s);", (req.product_id, f"Product {req.product_id}", req.new_price))
+        else:
+            cur.execute("UPDATE products SET price = %s WHERE id = %s;", (req.new_price, req.product_id))
+        conn.commit()
+        cur.close()
+        conn.close()
+        return {"status": "success", "message": "تم تحديث السعر بنجاح!"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-            invBtn.className = "px-3.5 py-2 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white";
-            depBtn.className = "px-3.5 py-2 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white";
-            purBtn.className = "px-3.5 py-2 rounded-lg text-xs font-bold transition text-slate-400 hover:text-white";
+@app.get("/get-product-price/{product_id}")
+def get_product_price(product_id: int):
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("SELECT price FROM products WHERE id = %s;", (product_id,))
+        row = cur.fetchone()
+        cur.close()
+        conn.close()
+        if not row:
+            return {"status": "success", "price": 2.50}  # السعر الافتراضي
+        return {"status": "success", "price": row[0]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-            if (tabName === 'inventory') {
-                invSec.classList.remove('hidden');
-                invBtn.className = "px-3.5 py-2 rounded-lg text-xs font-bold transition bg-blue-600 text-white shadow-lg";
-                loadAccounts();
-            } else if (tabName === 'deposits') {
-                depSec.classList.remove('hidden');
-                depBtn.className = "px-3.5 py-2 rounded-lg text-xs font-bold transition bg-blue-600 text-white shadow-lg";
-                fetchPendingDeposits();
-            } else if (tabName === 'purchases') {
-                purSec.classList.remove('hidden');
-                purBtn.className = "px-3.5 py-2 rounded-lg text-xs font-bold transition bg-blue-600 text-white shadow-lg";
-                fetchAllPurchases();
-            }
-        }
-
-        async function loadAccounts() {
-            let tbody = document.getElementById('accountsTableBody');
-            tbody.innerHTML = `<tr><td colspan="4" class="py-4 text-center text-slate-500">Loading...</td></tr>`;
-            try {
-                let res = await fetch(`${API_URL}/get-all-accounts`);
-                let data = await res.json();
-                if(res.ok && data.accounts && data.accounts.length > 0) {
-                    tbody.innerHTML = "";
-                    data.accounts.forEach(acc => {
-                        let statusBadge = acc.is_sold 
-                            ? `<span class="bg-red-500/10 text-red-400 px-2 py-0.5 rounded-md border border-red-500/20 font-medium">Sold ❌</span>`
-                            : `<span class="bg-emerald-500/10 text-emerald-400 px-2 py-0.5 rounded-md border border-emerald-500/20 font-medium">Available ✅</span>`;
-                    
-                        tbody.innerHTML += `
-                            <tr class="hover:bg-slate-800/50">
-                                <td class="py-3 font-mono">${acc.id}</td>
-                                <td class="py-3 font-mono text-slate-200 max-w-xs truncate">${acc.account_data}</td>
-                                <td class="py-3">${statusBadge}</td>
-                                <td class="py-3 text-center">
-                                    <button onclick="deleteAccount(${acc.id})" class="bg-red-600/20 hover:bg-red-600 text-red-400 hover:text-white px-3 py-1 rounded-lg border border-red-500/30 transition text-xs">Delete</button>
-                                </td>
-                            </tr>
-                        `;
-                    });
-                } else {
-                    tbody.innerHTML = `<tr><td colspan="4" class="py-4 text-center text-slate-500">No accounts added yet.</td></tr>`;
-                }
-            } catch (err) {
-                tbody.innerHTML = `<tr><td colspan="4" class="py-4 text-center text-red-400">Server connection error</td></tr>`;
-            }
-        }
-
-        async function deleteAccount(accountId) {
-            if (!confirm(`Delete account ID #${accountId}?`)) return;
-            try {
-                let res = await fetch(`${API_URL}/delete-account`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ account_id: accountId, admin_secret: currentAdminSecret })
-                });
-                let data = await res.json();
-                if (res.ok) {
-                    alert("✅ " + data.message);
-                    loadAccounts();
-                } else {
-                    alert("❌ " + (data.detail || "Deletion error"));
-                }
-            } catch (err) {
-                alert("❌ Server connection error");
-            }
-        }
-
-        document.getElementById('addForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            let productId = document.getElementById('product_id').value;
-            let accountData = document.getElementById('account_data').value;
-            let msg = document.getElementById('resultMsg');
-            msg.innerText = "Adding...";
-            msg.className = "mt-3 text-center text-xs font-semibold text-slate-400";
-
-            try {
-                let response = await fetch(`${API_URL}/add-account`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ product_id: parseInt(productId), account_data: accountData, admin_secret: currentAdminSecret })
-                });
-                let data = await response.json();
-                if (response.ok) {
-                    msg.className = "mt-3 text-center text-xs font-semibold text-emerald-400";
-                    msg.innerText = "✅ " + data.message;
-                    document.getElementById('account_data').value = "";
-                    loadAccounts();
-                } else {
-                    msg.className = "mt-3 text-center text-xs font-semibold text-red-400";
-                    msg.innerText = "❌ " + (data.detail || "Error");
-                }
-            } catch (err) {
-                msg.className = "mt-3 text-center text-xs font-semibold text-red-400";
-                msg.innerText = "❌ Server connection error";
-            }
-        });
-
-        document.getElementById('priceForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            let productId = document.getElementById('price_product_id').value;
-            let newPrice = document.getElementById('new_price').value;
-            let msg = document.getElementById('priceMsg');
-            msg.innerText = "Updating price...";
-            msg.className = "mt-3 text-center text-xs font-semibold text-slate-400";
-
-            try {
-                let response = await fetch(`${API_URL}/update-product-price`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ product_id: parseInt(productId), new_price: parseFloat(newPrice), admin_secret: currentAdminSecret })
-                });
-                let data = await response.json();
-                if (response.ok) {
-                    msg.className = "mt-3 text-center text-xs font-semibold text-emerald-400";
-                    msg.innerText = "✅ " + (data.message || "Price updated successfully");
-                } else {
-                    msg.className = "mt-3 text-center text-xs font-semibold text-red-400";
-                    msg.innerText = "❌ " + (data.detail || "Update error");
-                }
-            } catch (err) {
-                msg.className = "mt-3 text-center text-xs font-semibold text-red-400";
-                msg.innerText = "❌ Server connection error";
-            }
-        });
-
-        async function fetchPendingDeposits() {
-            let container = document.getElementById('depositsList');
-            try {
-                let res = await fetch(`${API_URL}/get-pending-deposits?admin_secret=${currentAdminSecret}`);
-                let data = await res.json();
-                if (res.ok && data.deposits && data.deposits.length > 0) {
-                    container.innerHTML = data.deposits.map(d => `
-                        <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 flex justify-between items-center text-xs">
-                            <div class="space-y-1">
-                                <p class="text-white font-bold">Customer: ${d.customer_name} (${d.customer_email})</p>
-                                <p class="text-emerald-400 font-bold text-sm">Amount: $${d.amount}</p>
-                                <p class="text-slate-400 font-mono">TXID: ${d.txid}</p>
-                            </div>
-                            <button onclick="approveDeposit(${d.order_id})" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold px-4 py-2.5 rounded-xl transition shadow-lg">
-                                Approve & Credit
-                            </button>
-                        </div>
-                    `).join('');
-                } else {
-                    container.innerHTML = `<p class="text-xs text-slate-500">No pending deposits found.</p>`;
-                }
-            } catch (err) {
-                container.innerHTML = `<p class="text-xs text-red-500">Error loading deposits.</p>`;
-            }
-        }
-
-        async function approveDeposit(orderId) {
-            if (!confirm("Are you sure you want to approve this deposit and credit the user's balance?")) return;
-            try {
-                let res = await fetch(`${API_URL}/approve-deposit`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ order_id: orderId, admin_secret: currentAdminSecret })
-                });
-                let data = await res.json();
-                if (res.ok) {
-                    alert("✅ " + data.message);
-                    fetchPendingDeposits();
-                } else {
-                    alert("❌ " + (data.detail || "Approval failed"));
-                }
-            } catch (err) {
-                alert("❌ Server connection error");
-            }
-        }
-
-        async function fetchAllPurchases() {
-            let container = document.getElementById('purchasesList');
-            try {
-                let res = await fetch(`${API_URL}/get-all-purchases?admin_secret=${currentAdminSecret}`);
-                let data = await res.json();
-                if (res.ok && data.purchases && data.purchases.length > 0) {
-                    container.innerHTML = data.purchases.map(p => `
-                        <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2 text-xs">
-                            <div class="flex justify-between items-center border-b border-slate-800 pb-2">
-                                <span class="text-white font-bold">Order #${p.order_id} — ${p.customer_name} (${p.customer_email})</span>
-                                <span class="text-emerald-400 font-bold">Paid: $${p.total_amount}</span>
-                            </div>
-                            <div>
-                                <span class="text-slate-400 block mb-1">Delivered Account Details:</span>
-                                <textarea readonly class="w-full bg-slate-900 border border-slate-800 rounded p-2 text-blue-400 font-mono" rows="2">${p.account_details}</textarea>
-                            </div>
-                        </div>
-                    `).join('');
-                } else {
-                    container.innerHTML = `<p class="text-xs text-slate-500">No product purchases recorded yet.</p>`;
-                }
-            } catch (err) {
-                container.innerHTML = `<p class="text-xs text-red-500">Error loading purchases.</p>`;
-            }
-        }
-    </script>
-</body>
-</html>
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
