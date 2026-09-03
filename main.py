@@ -407,7 +407,7 @@ def update_user_balance(req: UpdateBalanceRequest):
     try:
         conn = get_db_connection()
         cur = conn.cursor()
-        cur.execute("UPDATE users SET balance = %s WHERE id = %s RETURNING full_name;", (req.new_balance, req.user_id))
+        cur.execute("UPDATE users SET balance = %s WHERE id = %s RETURNING id, full_name, balance;", (req.new_balance, req.user_id))
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="User not found!")
