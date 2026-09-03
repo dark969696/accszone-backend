@@ -359,23 +359,27 @@ def get_all_users(admin_secret: str):
         conn = get_db_connection()
         cur = conn.cursor()
         
-        # استعلام آمن ومباشر لمنع أي خطأ في الفهارس
+        # بنجيب البيانات الأساسية فقط عمود بعمود لتجنب أي تداخل في الفهارس
         cur.execute("SELECT id, full_name, email, balance, is_blocked FROM users ORDER BY id DESC;")
-        users_rows = cur.fetchall()
+        rows = cur.fetchall()
         
         users = []
-        for r in users_rows:
-            user_id = r[0]
-            # حساب عدد الإيداعات المقبولة بشكل منفصل لكل مستخدم
-            cur.execute("SELECT COUNT(*) FROM orders WHERE user_id = %s AND payment_status = 'approved';", (user_id,))
-            dep_count = cur.fetchone()[0]
-            
+        for r in rows:
+            u_id = r[0]
+            # حساب عدد الإيداعات بعملية منفصلة 100% آمنة
+            try:
+                cur.execute("SELECT COUNT(*) FROM orders WHERE user_id = %s;", (u_id,))
+                dep_row = cur.fetchone()
+                dep_count = dep_row[0] if dep_row else 0
+            except Exception:
+                dep_count = 0
+
             users.append({
-                "id": user_id,
-                "full_name": r[1],
-                "email": r[2],
-                "balance": r[3],
-                "is_blocked": r[4],
+                "id": u_id,
+                "full_name": r[1] if len(r) > 1 else "Unknown",
+                "email": r[2] if len(r) > 2 else "",
+                "balance": r[3] if len(r) > 3 else 0.0,
+                "is_blocked": r[4] if len(r) > 4 else False,
                 "total_deposits": dep_count
             })
             
